@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta
 import io
-import re  # Nova biblioteca para extração inteligente de datas
+import re
 import xml.etree.ElementTree as ET
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -188,7 +188,7 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
         )
     """, (codigo, loja, codigo, loja))
 
-# --- INICIALIZAÇÃO DO BANCO (Inalterada) ---
+# --- INICIALIZAÇÃO DO BANCO ---
 def init_db():
     conn = get_db_connection()
     try:
@@ -235,7 +235,7 @@ def init_db():
 
 init_db()
 
-# --- FUNÇÃO GERADORA DE PRÓXIMO CÓDIGO E PDF (Inalteradas) ---
+# --- FUNÇÃO GERADORA DE PRÓXIMO CÓDIGO E PDF ---
 def gerar_proximo_codigo_produto(cursor_existente=None):
     fecha_conn = False
     if cursor_existente: cursor = cursor_existente
@@ -756,6 +756,8 @@ else:
                                     conn.commit()
                                     st.success("Nota incorporada no ERP com sucesso!")
                                 finally: conn.close()
+                except Exception as e:
+                    st.error(f"❌ Erro ao processar o arquivo XML: {e}")
 
         elif menu_selecionado == "✍️ Lançamento Manual":
             st.markdown("### ✍️ Lançamento Unitário Direto")
