@@ -68,7 +68,11 @@ def init_db():
                         loja TEXT)""")
     
     lojas_iniciais = [("Loja Centro",), ("Loja Shopping",), ("Curitiba",)]
-    cursor.executemany("INSERT OR IGNORE INTO lojas VALUES (?)", lojas_iniciais)
+    for l in lojas_iniciais:
+        try:
+            cursor.execute("INSERT OR IGNORE INTO lojas (nome_loja) VALUES (?)", l)
+        except Exception:
+            pass
     
     usuarios_iniciais = [
         ("admin", "admin123", "Administrador", "Geral"),
@@ -79,7 +83,12 @@ def init_db():
         ("estoque_shopping", "123", "Estoquista", "Loja Shopping"),
         ("chefe_shopping", "123", "Estoquista Chefe", "Loja Shopping")
     ]
-    cursor.executemany("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", usuarios_iniciais)
+    for u in usuarios_iniciais:
+        try:
+            cursor.execute("INSERT OR IGNORE INTO usuarios (username, senha, perfil, loja) VALUES (?, ?, ?, ?)", u)
+        except Exception:
+            pass
+            
     conn.commit()
 
     cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (
@@ -312,12 +321,15 @@ else:
                 with st.form("form_add_carrinho"):
                     col_a, col_b = st.columns([2, 1])
                     with col_a:
-                        prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist())
-                        est_atual_item = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'estoque_atual'].values[0]
-                        unid_med = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'unidade'].values[0]
-                        st.info(f"ℹ️ Estoque atual desta unidade: **{est_atual_item} {unid_med}**")
+                        prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist(), key="select_prod_requisicao")
                     with col_b:
                         qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
+                        
+                    # Exibição dinâmica do saldo atual do item selecionado
+                    if prod_sel:
+                        est_atual_item = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'estoque_atual'].values[0]
+                        unid_med = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'unidade'].values[0]
+                        st.info(f"ℹ️ Estoque atual desta unidade para **{prod_sel}**: **{est_atual_item} {unid_med}**")
                         
                     btn_add = st.form_submit_button("➕ Adicionar ao Carrinho", use_container_width=True)
                     
@@ -1333,14 +1345,14 @@ else:
                 params.append(filtro_loja)
             if filtro_usuario != "Todos":
                 query_log += " AND usuario = ?"
-                params.append(filtro_usuario)
+                params.append(filres_usuario := filtro_usuario)
             
             query_log += " ORDER BY id_log DESC"
             df_logs = pd.read_sql(query_log, conn, params=params)
             conn.close()
             
             if not df_logs.empty:
-                st.dataframe(formatar_dataframe_datas(df_logs), use_container_width=True, hide_index=True)
+                st.dataframe(formatar_dataframe_datas(df_logs), use_container_width=True, hide_index['id_log'] if 'id_log' in df_logs.columns else True) if 'id_log' in df_logs.columns else st.dataframe(formatar_dataframe_datas(df_logs), use_container_width=True)
                 
                 st.markdown("---")
                 st.markdown("#### 🔍 Detalhes Ampliados do Log")
