@@ -3,25 +3,99 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta
 import io
+import re  # Nova biblioteca para extração inteligente de datas
 import xml.etree.ElementTree as ET
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Grupo Dolcissimo - Sistema de Estoque", 
+    page_title="Grupo Dolcissimo - Estoque ERP", 
     page_icon="📦", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CSS PERSONALIZADO ---
+# --- TEMA E CSS TECNOLÓGICO CUSTOMIZADO ---
 st.markdown("""
     <style>
-        .main { background-color: #f8f9fa; }
-        .stButton>button { border-radius: 8px; font-weight: bold; transition: 0.3s; }
-        .stButton>button:hover { border-color: #25D366; color: #25D366; }
-        div[data-testid="stMetricValue"] { font-size: 24px; color: #2c3e50; }
+        /* Fundo principal limpo e moderno */
+        .stApp {
+            background-color: #f4f7f9;
+        }
+        
+        /* Barra Lateral Tecnológica */
+        [data-testid="stSidebar"] {
+            background-color: #0d1b2a;
+            color: #e0e1dd;
+            border-right: 1px solid #1b263b;
+        }
+        [data-testid="stSidebar"] * {
+            color: #e0e1dd;
+        }
+        
+        /* Estilização dos Menus Laterais (Radio Buttons) */
+        div.row-widget.stRadio > div {
+            background-color: #1b263b;
+            border-radius: 12px;
+            padding: 15px 10px;
+            border: 1px solid #415a77;
+        }
+        div.row-widget.stRadio > div label {
+            padding: 10px;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            margin-bottom: 5px;
+        }
+        div.row-widget.stRadio > div label:hover {
+            background-color: #415a77;
+            color: #00E5FF; /* Destaque Ciano */
+            transform: translateX(5px);
+        }
+        
+        /* Estilização de Botões - Efeito Gradiente e Sombra */
+        .stButton>button {
+            background: linear-gradient(135deg, #1b263b 0%, #415a77 100%);
+            color: #ffffff;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .stButton>button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(27, 38, 59, 0.4);
+            color: #00E5FF;
+            border-color: #00E5FF;
+        }
+
+        /* Forms / Cards com bordas arredondadas e sombras suaves */
+        [data-testid="stForm"] {
+            background-color: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.05);
+            border: 1px solid #e2e8f0;
+            padding: 24px;
+        }
+
+        /* Métricas (Números grandes) */
+        [data-testid="stMetricValue"] {
+            color: #0d1b2a;
+            font-weight: 900;
+            font-size: 28px;
+        }
+        
+        /* Ajuste nas abas internas para combinar */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 20px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            border-radius: 8px 8px 0 0;
+            padding: 10px 20px;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -29,7 +103,7 @@ st.markdown("""
 def get_db_connection():
     return sqlite3.connect('sistema_estoque.db', timeout=20)
 
-# --- FUNÇÃO DE FORMATAÇÃO DE DATA PARA BR (DD/MM/AAAA) ---
+# --- FUNÇÕES DE FORMATAÇÃO DE DATA ---
 def formatar_data_br(val):
     if not val or pd.isna(val):
         return ""
@@ -54,19 +128,29 @@ def formatar_dataframe_datas(df):
             df_copia[col] = df_copia[col].apply(formatar_data_br)
     return df_copia
 
-# --- FUNÇÃO FIFO COM CORREÇÃO DA VALIDADE EXATA NO NEGATIVO ---
+# --- FUNÇÃO FIFO COM EXTRAÇÃO INTELIGENTE DE DATAS (REGEX) ---
 def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, validade_informada):
     val_limpa = datetime.now().strftime("%Y-%m-%d")
+    
+    # INTELIGÊNCIA DE EXTRAÇÃO: Procura a última data no formato DD/MM/YYYY dentro de qualquer texto misturado
     if validade_informada:
-        val_str_aux = str(validade_informada).strip()
-        try:
-            if "/" in val_str_aux:
-                val_limpa = datetime.strptime(val_str_aux, "%d/%m/%Y").strftime("%Y-%m-%d")
-            else:
-                val_limpa = val_str_aux[:10]
-        except:
-            pass
+        texto_validade = str(validade_informada).strip()
+        datas_encontradas = re.findall(r'\d{2}/\d{2}/\d{4}', texto_validade)
+        
+        if datas_encontradas:
+            # Pega a ÚLTIMA data encontrada na frase (que é a do excedente recém digitado)
+            ultima_data_str = datas_encontradas[-1]
+            try:
+                val_limpa = datetime.strptime(ultima_data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+            except:
+                pass
+        else:
+            # Caso esteja no padrão americano YYYY-MM-DD
+            datas_iso = re.findall(r'\d{4}-\d{2}-\d{2}', texto_validade)
+            if datas_iso:
+                val_limpa = datas_iso[-1]
 
+    # Busca lotes com saldo positivo para abater primeiro (FIFO)
     cursor.execute("""
         SELECT validade, SUM(quantidade) as qtd 
         FROM estoque_lotes 
@@ -79,6 +163,7 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
     
     restante = qtd_a_descontar
     
+    # Consome os lotes disponíveis
     for val, qtd in lotes:
         if restante <= 0:
             break
@@ -87,11 +172,12 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
                        (codigo, loja, -desconto, val))
         restante -= desconto
     
-    # Se sobrar saldo a descontar, lança o excedente NEGATIVO exatamente na validade informada/escolhida
+    # Lança saldo negativo exatamente na validade extraída
     if restante > 0:
         cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
                        (codigo, loja, -restante, val_limpa))
     
+    # Limpeza de zeros
     cursor.execute("""
         DELETE FROM estoque_lotes 
         WHERE codigo = ? AND loja = ? AND validade IN (
@@ -102,20 +188,13 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
         )
     """, (codigo, loja, codigo, loja))
 
-# --- CONFIGURAÇÃO DO BANCO DE DADOS ---
+# --- INICIALIZAÇÃO DO BANCO (Inalterada) ---
 def init_db():
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        
-        cursor.execute("""CREATE TABLE IF NOT EXISTS lojas (
-                            nome_loja TEXT PRIMARY KEY)""")
-        
-        cursor.execute("""CREATE TABLE IF NOT EXISTS usuarios (
-                            username TEXT PRIMARY KEY,
-                            senha TEXT,
-                            perfil TEXT,
-                            loja TEXT)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS lojas (nome_loja TEXT PRIMARY KEY)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, senha TEXT, perfil TEXT, loja TEXT)""")
         
         lojas_iniciais = [("Loja Centro",), ("Loja Shopping",), ("Curitiba",)]
         cursor.executemany("INSERT OR IGNORE INTO lojas VALUES (?)", lojas_iniciais)
@@ -131,84 +210,23 @@ def init_db():
         ]
         cursor.executemany("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", usuarios_iniciais)
 
-        cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (
-                            codigo TEXT PRIMARY KEY, 
-                            codigo_barras TEXT,
-                            codigo_fornecedor TEXT,
-                            descricao TEXT, 
-                            categoria TEXT, 
-                            unidade TEXT, 
-                            custo REAL,
-                            estoque_minimo REAL DEFAULT 5.0)""")
-
+        cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (codigo TEXT PRIMARY KEY, codigo_barras TEXT, codigo_fornecedor TEXT, descricao TEXT, categoria TEXT, unidade TEXT, custo REAL, estoque_minimo REAL DEFAULT 5.0)""")
         for col, tipo in [("codigo_barras", "TEXT"), ("codigo_fornecedor", "TEXT")]:
-            try:
-                cursor.execute(f"ALTER TABLE produtos ADD COLUMN {col} {tipo}")
-            except:
-                pass
+            try: cursor.execute(f"ALTER TABLE produtos ADD COLUMN {col} {tipo}")
+            except: pass
 
-        cursor.execute("""CREATE TABLE IF NOT EXISTS conversoes_unidades (
-                            id_conversao INTEGER PRIMARY KEY AUTOINCREMENT,
-                            codigo_produto TEXT,
-                            unidade_origem TEXT,
-                            unidade_destino TEXT,
-                            fator_conversao REAL,
-                            FOREIGN KEY(codigo_produto) REFERENCES produtos(codigo))""")
-
-        cursor.execute("""CREATE TABLE IF NOT EXISTS estoque_lotes (
-                            id_lote INTEGER PRIMARY KEY AUTOINCREMENT,
-                            codigo TEXT,
-                            loja TEXT,
-                            quantidade REAL,
-                            validade TEXT)""")
-
-        cursor.execute("""CREATE TABLE IF NOT EXISTS nfs_importadas (
-                            chave_nfe TEXT PRIMARY KEY,
-                            data_importacao TEXT,
-                            loja TEXT)""")
-
-        cursor.execute("""CREATE TABLE IF NOT EXISTS requisicoes_loja (
-                            id_pedido INTEGER PRIMARY KEY AUTOINCREMENT,
-                            lote_id TEXT,
-                            data TEXT,
-                            loja TEXT,
-                            solicitante TEXT,
-                            codigo_produto TEXT,
-                            qtd_pedida REAL,
-                            qtd_enviada_estoque REAL DEFAULT 0,
-                            motivo_divergencia TEXT DEFAULT '',
-                            validade_sugerida TEXT DEFAULT '',
-                            validade_alterada_gerente TEXT DEFAULT '',
-                            qtd_entregue REAL DEFAULT 0,
-                            estoque_responsavel TEXT,
-                            status TEXT,
-                            observacao TEXT)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS conversoes_unidades (id_conversao INTEGER PRIMARY KEY AUTOINCREMENT, codigo_produto TEXT, unidade_origem TEXT, unidade_destino TEXT, fator_conversao REAL, FOREIGN KEY(codigo_produto) REFERENCES produtos(codigo))""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS estoque_lotes (id_lote INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, loja TEXT, quantidade REAL, validade TEXT)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS nfs_importadas (chave_nfe TEXT PRIMARY KEY, data_importacao TEXT, loja TEXT)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS requisicoes_loja (id_pedido INTEGER PRIMARY KEY AUTOINCREMENT, lote_id TEXT, data TEXT, loja TEXT, solicitante TEXT, codigo_produto TEXT, qtd_pedida REAL, qtd_enviada_estoque REAL DEFAULT 0, motivo_divergencia TEXT DEFAULT '', validade_sugerida TEXT DEFAULT '', validade_alterada_gerente TEXT DEFAULT '', qtd_entregue REAL DEFAULT 0, estoque_responsavel TEXT, status TEXT, observacao TEXT)""")
         
-        colunas_req = [("qtd_enviada_estoque", "REAL DEFAULT 0"), 
-                       ("motivo_divergencia", "TEXT DEFAULT ''"), 
-                       ("validade_sugerida", "TEXT DEFAULT ''"), 
-                       ("validade_alterada_gerente", "TEXT DEFAULT ''")]
+        colunas_req = [("qtd_enviada_estoque", "REAL DEFAULT 0"), ("motivo_divergencia", "TEXT DEFAULT ''"), ("validade_sugerida", "TEXT DEFAULT ''"), ("validade_alterada_gerente", "TEXT DEFAULT ''")]
         for col, tipo in colunas_req:
-            try:
-                cursor.execute(f"ALTER TABLE requisicoes_loja ADD COLUMN {col} {tipo}")
-            except:
-                pass
+            try: cursor.execute(f"ALTER TABLE requisicoes_loja ADD COLUMN {col} {tipo}")
+            except: pass
 
-        cursor.execute("""CREATE TABLE IF NOT EXISTS inventarios_salvos (
-                            id_inventario INTEGER PRIMARY KEY AUTOINCREMENT,
-                            data TEXT,
-                            loja TEXT,
-                            responsavel TEXT,
-                            dados_csv TEXT)""")
-
-        cursor.execute("""CREATE TABLE IF NOT EXISTS logs_sistema (
-                            id_log INTEGER PRIMARY KEY AUTOINCREMENT,
-                            data TEXT,
-                            usuario TEXT,
-                            loja TEXT,
-                            tipo_acao TEXT,
-                            detalhes TEXT)""")
-        
+        cursor.execute("""CREATE TABLE IF NOT EXISTS inventarios_salvos (id_inventario INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT, loja TEXT, responsavel TEXT, dados_csv TEXT)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS logs_sistema (id_log INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT, usuario TEXT, loja TEXT, tipo_acao TEXT, detalhes TEXT)""")
         conn.commit()
     except Exception as e:
         print(f"Erro ao inicializar DB: {e}")
@@ -217,11 +235,10 @@ def init_db():
 
 init_db()
 
-# --- FUNÇÃO GERADORA DE PRÓXIMO CÓDIGO AUTOMÁTICO ---
+# --- FUNÇÃO GERADORA DE PRÓXIMO CÓDIGO E PDF (Inalteradas) ---
 def gerar_proximo_codigo_produto(cursor_existente=None):
     fecha_conn = False
-    if cursor_existente:
-        cursor = cursor_existente
+    if cursor_existente: cursor = cursor_existente
     else:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -230,50 +247,35 @@ def gerar_proximo_codigo_produto(cursor_existente=None):
     cursor.execute("SELECT codigo FROM produtos WHERE codigo LIKE 'PROD-%'")
     res = cursor.fetchall()
     
-    if not res:
-        proximo_num = 1
+    if not res: proximo_num = 1
     else:
         numeros = []
         for r in res:
-            try:
-                num = int(r[0].replace("PROD-", ""))
-                numeros.append(num)
-            except:
-                pass
+            try: numeros.append(int(r[0].replace("PROD-", "")))
+            except: pass
         proximo_num = max(numeros) + 1 if numeros else 1
         
-    if fecha_conn:
-        conn.close()
-        
+    if fecha_conn: conn.close()
     return f"PROD-{proximo_num:03d}"
 
-# --- FUNÇÃO GERADORA DE PDF AGRUPADO POR LOTE ---
 def gerar_pdf_lote_conferencia(lote_id, loja):
     conn = get_db_connection()
-    df_lote_itens = pd.read_sql(f"""
-        SELECT r.lote_id, r.data, r.solicitante, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.motivo_divergencia, r.validade_sugerida, r.validade_alterada_gerente
-        FROM requisicoes_loja r
-        JOIN produtos p ON r.codigo_produto = p.codigo
-        WHERE r.lote_id = '{lote_id}' AND r.loja = '{loja}'
-    """, conn)
+    df_lote_itens = pd.read_sql(f"""SELECT r.lote_id, r.data, r.solicitante, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.motivo_divergencia, r.validade_sugerida, r.validade_alterada_gerente FROM requisicoes_loja r JOIN produtos p ON r.codigo_produto = p.codigo WHERE r.lote_id = '{lote_id}' AND r.loja = '{loja}'""", conn)
     conn.close()
 
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
-    
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, height - 50, "GRUPO DOLCISSIMO - RELATÓRIO DE LOTE DE SEPARAÇÃO")
     
     if not df_lote_itens.empty:
         solicitante = df_lote_itens.iloc[0]['solicitante']
         data_lote = formatar_data_br(df_lote_itens.iloc[0]['data'])
-        
         c.setFont("Helvetica", 11)
         c.drawString(50, height - 80, f"Lote ID: {lote_id} | Solicitante: {solicitante}")
         c.drawString(50, height - 100, f"Data da Solicitação: {data_lote} | Unidade: {loja}")
         c.drawString(50, height - 120, f"Data de Emissão do Relatório: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-        
         c.line(50, height - 135, width - 50, height - 135)
         
         y = height - 165
@@ -285,7 +287,6 @@ def gerar_pdf_lote_conferencia(lote_id, loja):
             if y < 100:
                 c.showPage()
                 y = height - 50
-            
             c.setFont("Helvetica-Bold", 10)
             c.drawString(60, y, f"• Produto: {row['descricao']}")
             y -= 15
@@ -295,11 +296,9 @@ def gerar_pdf_lote_conferencia(lote_id, loja):
             val_usada = row['validade_alterada_gerente'] if row['validade_alterada_gerente'] else row['validade_sugerida']
             c.drawString(80, y, f"Validade: {val_usada} | Divergência: {row['motivo_divergencia'] if row['motivo_divergencia'] else 'Nenhuma'}")
             y -= 25
-    
     c.line(50, 60, width - 50, 60)
     c.setFont("Helvetica-Oblique", 9)
     c.drawString(50, 45, "Documento gerado automaticamente pelo Sistema Corporativo de Estoque - Grupo Dolcissimo.")
-    
     c.save()
     buffer.seek(0)
     return buffer
@@ -311,19 +310,19 @@ if 'autenticado' not in st.session_state:
     st.session_state.perfil = ""
     st.session_state.loja = ""
 
-st.sidebar.title("🔐 Acesso ao Sistema")
-
 if not st.session_state.autenticado:
-    col1, col2, col3 = st.columns([1, 2, 1])
+    # TELA DE LOGIN ESTILIZADA
+    st.markdown("<br><br><br>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
-        st.markdown("<h1 style='text-align: center; color: #2c3e50;'>📦 Grupo Dolcissimo</h1>", unsafe_allow_html=True)
-        st.markdown("<h3 style='text-align: center; color: #7f8c8d;'>Sistema Corporativo de Gestão de Estoque</h3>", unsafe_allow_html=True)
-        st.markdown("---")
+        st.markdown("<h1 style='text-align: center; color: #0d1b2a; font-weight: 900;'>🌐 Dolcissimo ERP</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #415a77; font-size: 18px;'>Plataforma Corporativa de Gestão Logística</p>", unsafe_allow_html=True)
         
         with st.form("form_login"):
-            user_input = st.text_input("👤 Usuário")
-            senha_input = st.text_input("🔑 Senha", type="password")
-            btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
+            user_input = st.text_input("Usuário (Login)")
+            senha_input = st.text_input("Senha de Acesso", type="password")
+            st.markdown("<br>", unsafe_allow_html=True)
+            btn_login = st.form_submit_button("AUTENTICAR SISTEMA", use_container_width=True)
             
             if btn_login:
                 conn = get_db_connection()
@@ -339,1193 +338,591 @@ if not st.session_state.autenticado:
                     st.session_state.loja = res[1]
                     st.rerun()
                 else:
-                    st.error("❌ Usuário ou senha incorretos!")
+                    st.error("❌ Credenciais inválidas. Tente novamente.")
 else:
-    st.sidebar.markdown(f"👤 **Usuário:** {st.session_state.usuario}")
-    st.sidebar.markdown(f"🏢 **Unidade:** {st.session_state.loja}")
-    st.sidebar.markdown(f"🔑 **Perfil:** {st.session_state.perfil}")
-    st.sidebar.markdown("---")
-    
-    if st.sidebar.button("🚪 Sair do Sistema", use_container_width=True):
-        st.session_state.autenticado = False
-        st.rerun()
+    # CARD DE USUÁRIO NA SIDEBAR
+    st.sidebar.markdown(f"""
+        <div style="background-color: #1b263b; padding: 20px; border-radius: 12px; text-align: center; border-left: 5px solid #00E5FF; margin-bottom: 25px; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
+            <h3 style="color: #ffffff; margin: 0; padding-bottom: 5px; font-weight: bold;">👤 {st.session_state.usuario}</h3>
+            <p style="color: #a3b1c6; margin: 0; font-size: 15px;">🏢 {st.session_state.loja}</p>
+            <p style="color: #00E5FF; margin: 5px 0 0 0; font-size: 13px; font-weight: bold; text-transform: uppercase;">{st.session_state.perfil}</p>
+        </div>
+    """, unsafe_allow_html=True)
 
     perfil_atual = st.session_state.perfil
     loja_atual = st.session_state.loja
 
-    st.markdown(f"## 🏢 Painel Corporativo — **{loja_atual if perfil_atual != 'Administrador' else 'Global (Admin)'}**")
-    st.markdown("---")
-
-    # --- 1. MÓDULO: GERENTE ---
+    # --- MENU LATERAL DINÂMICO (NOVO LAYOUT) ---
+    st.sidebar.markdown("<h4 style='color: #00E5FF;'>📍 MENU DE NAVEGAÇÃO</h4>", unsafe_allow_html=True)
+    
+    menu_selecionado = ""
+    
     if perfil_atual == "Gerente":
-        tab_ped, tab_check, tab_inv, tab_alertas = st.tabs([
-            "📝 Requisição Interna", 
-            "✔️ Check-list & Baixa de Consumo", 
-            "📋 Inventário & Histórico",
-            "🚨 Alertas & Vencimentos"
+        menu_selecionado = st.sidebar.radio("Selecione o Módulo:", [
+            "🛒 Requisição de Materiais", 
+            "✔️ Check-list & Consumo", 
+            "📊 Inventário Físico",
+            "🚨 Alertas da Loja"
         ])
-        
+    elif perfil_atual in ["Estoquista", "Estoquista Chefe"]:
+        opcoes = ["📥 Pedidos para Separação", "📦 Consulta de Estoque", "📄 Importar NF-e (XML)", "✍️ Lançamento Manual", "🚨 Alertas de Vencimento"]
+        if perfil_atual == "Estoquista Chefe":
+            opcoes.insert(4, "⚠️ Baixa de Avaria/Vencimento")
+        menu_selecionado = st.sidebar.radio("Selecione o Módulo:", opcoes)
+    elif perfil_atual == "Administrador":
+        menu_selecionado = st.sidebar.radio("Selecione o Módulo (Admin):", [
+            "🚨 Dashboard Global de Alertas",
+            "🏢 Gestão de Unidades", 
+            "👥 Controle de Acessos", 
+            "✏️ Cadastro Mestre de Itens", 
+            "🔄 Regras de Conversão",
+            "🛠️ Ajuste de Produtos",
+            "📊 Carga Lote Planilha",
+            "🌐 Visão Analítica Consolidada",
+            "📜 Log de Auditoria"
+        ])
+
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🚪 Encerrar Sessão", use_container_width=True):
+        st.session_state.autenticado = False
+        st.rerun()
+
+    st.markdown(f"<h2 style='color: #0d1b2a; border-bottom: 3px solid #00E5FF; padding-bottom: 10px; margin-bottom: 30px;'>🏢 Painel Corporativo — <b>{loja_atual if perfil_atual != 'Administrador' else 'Governança Global'}</b></h2>", unsafe_allow_html=True)
+
+    # ==========================================
+    # LÓGICA DAS TELAS BASEADAS NO MENU LATERAL
+    # ==========================================
+
+    # --- GERENTE ---
+    if perfil_atual == "Gerente":
         if 'carrinho_requisicao' not in st.session_state:
             st.session_state.carrinho_requisicao = []
 
-        with tab_ped:
+        if menu_selecionado == "🛒 Requisição de Materiais":
             col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 🛒 Requisição de Materiais (Consumo Próprio)")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_g_ped"):
-                    st.rerun()
+            col_t1.markdown("### 🛒 Nova Requisição Interna")
+            if col_t2.button("🔄 Sincronizar Dados"): st.rerun()
 
             conn = get_db_connection()
-            df_produtos = pd.read_sql(f"""
-                SELECT p.codigo, p.codigo_barras, p.descricao, p.categoria, p.unidade, COALESCE(SUM(e.quantidade), 0) as estoque_atual, p.estoque_minimo, p.custo
-                FROM produtos p
-                LEFT JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}'
-                GROUP BY p.codigo
-            """, conn)
+            df_produtos = pd.read_sql(f"""SELECT p.codigo, p.codigo_barras, p.descricao, p.categoria, p.unidade, COALESCE(SUM(e.quantidade), 0) as estoque_atual, p.estoque_minimo, p.custo FROM produtos p LEFT JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}' GROUP BY p.codigo""", conn)
             conn.close()
             
             if not df_produtos.empty:
-                st.dataframe(
-                    df_produtos[['codigo', 'codigo_barras', 'descricao', 'categoria', 'estoque_atual', 'unidade', 'estoque_minimo', 'custo']], 
-                    use_container_width=True,
-                    hide_index=True
-                )
+                st.dataframe(df_produtos[['codigo', 'codigo_barras', 'descricao', 'categoria', 'estoque_atual', 'unidade']], use_container_width=True, hide_index=True)
                 
-                prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist(), key="select_prod_req")
+                prod_sel = st.selectbox("Selecione o Produto para o Carrinho", df_produtos['descricao'].tolist())
                 
                 with st.form("form_add_carrinho", clear_on_submit=True):
                     qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
-                    
                     if prod_sel:
                         est_atual_item = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'estoque_atual'].values[0]
                         unid_med = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'unidade'].values[0]
-                        st.info(f"ℹ️ Estoque atual desta unidade para **{prod_sel}**: **{est_atual_item} {unid_med}**")
+                        st.info(f"💡 Em estoque: **{est_atual_item} {unid_med}**")
                         
-                    btn_add = st.form_submit_button("➕ Adicionar ao Carrinho", use_container_width=True)
-                    
-                    if btn_add:
-                        if qtd_pedida <= 0:
-                            st.warning("⚠️ Informe uma quantidade maior que zero.")
+                    if st.form_submit_button("➕ Adicionar ao Carrinho", use_container_width=True):
+                        if qtd_pedida <= 0: st.warning("⚠️ Informe uma quantidade maior que zero.")
                         else:
                             cod_prod = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'codigo'].values[0]
                             existente = next((item for item in st.session_state.carrinho_requisicao if item['codigo'] == cod_prod), None)
-                            if existente:
-                                existente['quantidade'] += qtd_pedida
-                            else:
-                                st.session_state.carrinho_requisicao.append({'codigo': cod_prod, 'descricao': prod_sel, 'quantidade': qtd_pedida})
-                            st.success(f"Item '{prod_sel}' adicionado com sucesso!")
+                            if existente: existente['quantidade'] += qtd_pedida
+                            else: st.session_state.carrinho_requisicao.append({'codigo': cod_prod, 'descricao': prod_sel, 'quantidade': qtd_pedida})
+                            st.success(f"Adicionado!")
                 
                 st.markdown("---")
-                st.markdown("### 📋 Itens no Carrinho Atual")
+                st.markdown("#### 📋 Itens no Carrinho Atual")
                 if st.session_state.carrinho_requisicao:
                     df_carrinho = pd.DataFrame(st.session_state.carrinho_requisicao)
                     st.dataframe(df_carrinho, use_container_width=True, hide_index=True)
                     
-                    col_rem1, col_rem2 = st.columns([2, 1])
-                    with col_rem1:
-                        item_para_remover = st.selectbox("Selecione para remover", df_carrinho['descricao'].tolist(), key="rem_item_req", label_visibility="collapsed")
-                    with col_rem2:
+                    col_rem1, col_rem2 = st.columns([3, 1])
+                    with col_rem1: item_para_remover = st.selectbox("Selecione para remover do carrinho", df_carrinho['descricao'].tolist(), label_visibility="collapsed")
+                    with col_rem2: 
                         if st.button("🗑️ Remover Item", use_container_width=True):
-                            st.session_state.carrinho_requisicao = [item for item in st.session_state.carrinho_requisicao if item['descricao'] != item_para_remover]
+                            st.session_state.carrinho_requisicao = [i for i in st.session_state.carrinho_requisicao if i['descricao'] != item_para_remover]
                             st.rerun()
 
                     with st.form("form_finalizar_lote", clear_on_submit=True):
                         col_f1, col_f2 = st.columns(2)
-                        with col_f1:
-                            nome_resp = st.text_input("Seu Nome (Responsável)")
-                        with col_f2:
-                            obs_lote = st.text_input("Observação Geral (Opcional)")
+                        with col_f1: nome_resp = st.text_input("Responsável pela Solicitação")
+                        with col_f2: obs_lote = st.text_input("Observação Extra (Opcional)")
                         
-                        btn_enviar_lote = st.form_submit_button("🚀 Finalizar e Enviar Requisição", use_container_width=True)
-                        if btn_enviar_lote:
-                            if not nome_resp.strip():
-                                st.warning("Por favor, informe o seu nome.")
+                        if st.form_submit_button("🚀 Finalizar e Enviar Requisição ao Estoque Central", use_container_width=True):
+                            if not nome_resp.strip(): st.warning("Informe o responsável.")
                             else:
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 lote_id = datetime.now().strftime("LOTE-%Y%m%d%H%M%S")
-                                
                                 conn = get_db_connection()
                                 try:
                                     cursor = conn.cursor()
                                     for item in st.session_state.carrinho_requisicao:
-                                        cursor.execute("""INSERT INTO requisicoes_loja (lote_id, data, loja, solicitante, codigo_produto, qtd_pedida, status, observacao) 
-                                                          VALUES (?, ?, ?, ?, ?, ?, 'Aguardando Conferência', ?)""",
-                                                       (lote_id, data_hora, loja_atual, nome_resp, item['codigo'], item['quantidade'], obs_lote))
-                                    
-                                    desc_log = f"Requisição Lote {lote_id} ({len(st.session_state.carrinho_requisicao)} itens). Solicitante: {nome_resp}."
-                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                                   (data_hora, st.session_state.usuario, loja_atual, "REQUISICAO_LOTE", desc_log))
+                                        cursor.execute("""INSERT INTO requisicoes_loja (lote_id, data, loja, solicitante, codigo_produto, qtd_pedida, status, observacao) VALUES (?, ?, ?, ?, ?, ?, 'Aguardando Conferência', ?)""", (lote_id, data_hora, loja_atual, nome_resp, item['codigo'], item['quantidade'], obs_lote))
+                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)", (data_hora, st.session_state.usuario, loja_atual, "REQUISICAO_LOTE", f"Requisição Lote {lote_id} enviada."))
                                     conn.commit()
-                                finally:
-                                    conn.close()
+                                finally: conn.close()
                                 
                                 carrinho_temp = st.session_state.carrinho_requisicao.copy()
                                 st.session_state.carrinho_requisicao = []
                                 st.success("Requisição enviada com sucesso!")
                                 
                                 itens_str = "%0A".join([f"- {i['quantidade']}x {i['descricao']}" for i in carrinho_temp])
-                                texto_zap = f"*GRUPO DOLCISSIMO - REQUISIÇÃO LOJA*%0A" \
-                                            f"--------------------------------------------------%0A" \
-                                            f"🏢 *Unidade:* {loja_atual}%0A" \
-                                            f"📋 *Lote:* {lote_id}%0A" \
-                                            f"📅 *Data:* {formatar_data_br(data_hora)}%0A" \
-                                            f"👤 *Solicitante:* {nome_resp}%0A" \
-                                            f"📦 *Itens:*%0A{itens_str}%0A" \
-                                            f"💬 *Obs:* {obs_lote if obs_lote else 'Nenhuma'}"
-                                
-                                link_whatsapp = f"https://wa.me/?text={texto_zap}"
-                                st.markdown(f'<a href="{link_whatsapp}" target="_blank"><button style="background-color:#25D366; color:white; padding:12px 24px; border:none; border-radius:8px; font-weight:bold; font-size:16px; cursor:pointer; width:100%;">📲 Enviar Pedido via WhatsApp</button></a>', unsafe_allow_html=True)
-                else:
-                    st.info("O carrinho de requisição está vazio.")
-            else:
-                st.info("Nenhum produto cadastrado.")
-                
-        with tab_check:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 🔄 Check-list & Baixa de Consumo/Venda")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_g_chk"):
-                    st.rerun()
-            
-            sub_chk1, sub_chk2 = st.tabs(["Realizar Confirmação (Pendente)", "📜 Histórico de Check-lists (Validação Concluída)"])
+                                link_whatsapp = f"https://wa.me/?text=*GRUPO DOLCISSIMO - NOVO LOTE*%0A🏢 *Unidade:* {loja_atual}%0A📋 *Lote:* {lote_id}%0A👤 *Resp:* {nome_resp}%0A📦 *Itens:*%0A{itens_str}"
+                                st.markdown(f'<a href="{link_whatsapp}" target="_blank"><button style="background-color:#25D366; color:white; padding:12px 24px; border:none; border-radius:8px; font-weight:bold; width:100%;">📲 Avisar Estoque via WhatsApp</button></a>', unsafe_allow_html=True)
+                else: st.info("Carrinho vazio.")
+            else: st.info("Nenhum produto base cadastrado no sistema.")
 
+        elif menu_selecionado == "✔️ Check-list & Consumo":
+            st.markdown("### 🔄 Check-list de Separação & Baixa Final de Estoque")
+            
+            sub_chk1, sub_chk2 = st.tabs(["📌 Check-list Pendentes", "📜 Histórico de Concluídos"])
             with sub_chk1:
                 conn = get_db_connection()
-                df_geral_reqs = pd.read_sql(f"""
-                    SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.descricao, 
-                           r.qtd_pedida AS "Qtd Solicitada", 
-                           r.qtd_enviada_estoque AS "Qtd Separada", 
-                           r.validade_sugerida AS "Validade Informada",
-                           r.motivo_divergencia AS "Motivo Divergência", 
-                           r.status
-                    FROM requisicoes_loja r
-                    JOIN produtos p ON r.codigo_produto = p.codigo
-                    WHERE r.loja = '{loja_atual}'
-                    ORDER BY r.id_pedido DESC
-                """, conn)
+                df_geral_reqs = pd.read_sql(f"""SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.descricao, r.qtd_pedida AS "Qtd Solicitada", r.qtd_enviada_estoque AS "Qtd Separada", r.validade_sugerida AS "Validade Informada", r.motivo_divergencia AS "Motivo", r.status FROM requisicoes_loja r JOIN produtos p ON r.codigo_produto = p.codigo WHERE r.loja = '{loja_atual}' ORDER BY r.id_pedido DESC""", conn)
+                conn.close()
+                if not df_geral_reqs.empty: st.dataframe(formatar_dataframe_datas(df_geral_reqs), use_container_width=True, hide_index=True)
+                
+                st.markdown("---")
+                conn = get_db_connection()
+                df_prontos = pd.read_sql(f"""SELECT r.id_pedido, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.validade_sugerida FROM requisicoes_loja r JOIN produtos p ON r.codigo_produto = p.codigo WHERE r.loja = '{loja_atual}' AND r.status = 'Pronto para Check-list'""", conn)
                 conn.close()
                 
-                if not df_geral_reqs.empty:
-                    st.dataframe(formatar_dataframe_datas(df_geral_reqs), use_container_width=True, hide_index=True)
-                    
-                    st.markdown("---")
-                    st.markdown("### ✅ Confirmar Entrega e Dar Baixa Definitiva no Estoque da Unidade")
-                    conn = get_db_connection()
-                    df_prontos = pd.read_sql(f"""
-                        SELECT r.id_pedido, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.validade_sugerida
-                        FROM requisicoes_loja r
-                        JOIN produtos p ON r.codigo_produto = p.codigo
-                        WHERE r.loja = '{loja_atual}' AND r.status = 'Pronto para Check-list'
-                    """, conn)
-                    conn.close()
-                    
-                    if not df_prontos.empty:
-                        with st.form("form_checklist_gerente", clear_on_submit=True):
-                            id_ped_sel = st.selectbox("Selecione o ID do Item Separado", df_prontos['id_pedido'].tolist())
-                            item_info = df_prontos[df_prontos['id_pedido'] == id_ped_sel].iloc[0]
-                            
-                            st.info(f"📋 **Item:** {item_info['descricao']} | 📥 **Solicitado:** {item_info['qtd_pedida']} | 📦 **Separado:** {item_info['qtd_enviada_estoque']}")
-                            
-                            validade_original_est = str(item_info['validade_sugerida'])
-                            validade_gerente_edit = st.text_input("Validade conferida (Editável)", value=validade_original_est)
+                if not df_prontos.empty:
+                    with st.form("form_checklist_gerente", clear_on_submit=True):
+                        st.markdown("#### ✅ Validar Entrega e Deduzir Estoque")
+                        id_ped_sel = st.selectbox("Selecione a ID da Separação para Finalizar", df_prontos['id_pedido'].tolist())
+                        item_info = df_prontos[df_prontos['id_pedido'] == id_ped_sel].iloc[0]
+                        st.info(f"**Item:** {item_info['descricao']} | **Qtd Separada Estoque:** {item_info['qtd_enviada_estoque']}")
+                        
+                        validade_gerente_edit = st.text_input("Data de Validade Final Conferida (Altere se necessário)", value=str(item_info['validade_sugerida']))
+                        col_c1, col_c2 = st.columns(2)
+                        with col_c1: qtd_entregue = st.number_input("Quantidade Real Consumida/Entregue", min_value=0.0, value=float(item_info['qtd_enviada_estoque']), step=1.0)
+                        with col_c2: responsavel_baixa = st.text_input("Assinatura (Responsável)")
+                        
+                        if st.form_submit_button("✔️ Confirmar Baixa Definitiva do Saldo", use_container_width=True):
+                            if not responsavel_baixa.strip(): st.warning("Assinatura obrigatória.")
+                            else:
+                                data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                conn = get_db_connection()
+                                try:
+                                    cursor = conn.cursor()
+                                    cursor.execute("SELECT codigo_produto FROM requisicoes_loja WHERE id_pedido = ?", (id_ped_sel,))
+                                    cod_p = cursor.fetchone()[0]
 
-                            col_c1, col_c2 = st.columns(2)
-                            with col_c1:
-                                qtd_entregue = st.number_input("Quantidade Entregue / Consumida", min_value=0.0, value=float(item_info['qtd_enviada_estoque']), step=1.0)
-                            with col_c2:
-                                responsavel_baixa = st.text_input("Seu Nome (Responsável pela Validação)")
-                            
-                            btn_finalizar_chk = st.form_submit_button("✔️ Confirmar Entrega e Subtrair do Estoque", use_container_width=True)
-                            
-                            if btn_finalizar_chk:
-                                if not responsavel_baixa.strip():
-                                    st.warning("Informe o seu nome.")
-                                else:
-                                    data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    conn = get_db_connection()
-                                    try:
-                                        cursor = conn.cursor()
-                                        cursor.execute("SELECT codigo_produto FROM requisicoes_loja WHERE id_pedido = ?", (id_ped_sel,))
-                                        res_item = cursor.fetchone()
-                                        cod_p = res_item[0]
-
-                                        cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, validade_alterada_gerente = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", 
-                                                       (qtd_entregue, validade_gerente_edit.strip(), responsavel_baixa.strip(), id_ped_sel))
+                                    cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, validade_alterada_gerente = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", (qtd_entregue, validade_gerente_edit.strip(), responsavel_baixa.strip(), id_ped_sel))
+                                    
+                                    # Chamada da função FIFO inteligente que puxa a data informada para o negativo
+                                    descontar_estoque_fifo_com_negativo(cursor, cod_p, loja_atual, qtd_entregue, validade_gerente_edit.strip())
                                         
-                                        data_val_baixa = validade_gerente_edit.strip() if validade_gerente_edit.strip() else datetime.now().strftime("%Y-%m-%d")
-                                        descontar_estoque_fifo_com_negativo(cursor, cod_p, loja_atual, qtd_entregue, data_val_baixa)
-                                            
-                                        detalhe_log = f"Check-list item #{id_ped_sel} Concluído por {responsavel_baixa.strip()} | Baixa de {qtd_entregue} unidades em {loja_atual}. Validade conferida: {validade_gerente_edit}."
-                                        cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                                       (data_hora, st.session_state.usuario, loja_atual, "BAIXA_CONSUMO", detalhe_log))
-                                        conn.commit()
-                                    finally:
-                                        conn.close()
-                                    st.success("Baixa realizada com sucesso no estoque da unidade!")
-                                    st.rerun()
-                    else:
-                        st.info("Nenhum item aguardando check-list.")
-                else:
-                    st.info("Nenhuma requisição registrada.")
+                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)", (data_hora, st.session_state.usuario, loja_atual, "BAIXA_CONSUMO", f"Check-list item #{id_ped_sel} concluído por {responsavel_baixa}."))
+                                    conn.commit()
+                                finally: conn.close()
+                                st.success("Baixa realizada e estoque subtraído com sucesso!")
+                                st.rerun()
+                else: st.info("Nenhum item aguardando check-list no momento.")
 
             with sub_chk2:
-                st.markdown("#### 📜 Histórico de Check-lists Realizados (Validação de Usuário)")
                 conn = get_db_connection()
-                df_hist_chk = pd.read_sql(f"""
-                    SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.descricao, 
-                           r.qtd_pedida, r.qtd_entregue, r.validade_alterada_gerente AS "Validade Validada", 
-                           r.estoque_responsavel AS "Responsável Check-list"
-                    FROM requisicoes_loja r
-                    JOIN produtos p ON r.codigo_produto = p.codigo
-                    WHERE r.loja = '{loja_atual}' AND r.status = 'Concluído'
-                    ORDER BY r.id_pedido DESC
-                """, conn)
+                df_hist_chk = pd.read_sql(f"""SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.descricao, r.qtd_pedida, r.qtd_entregue, r.validade_alterada_gerente AS "Validade Validada", r.estoque_responsavel AS "Resp Check-list" FROM requisicoes_loja r JOIN produtos p ON r.codigo_produto = p.codigo WHERE r.loja = '{loja_atual}' AND r.status = 'Concluído' ORDER BY r.id_pedido DESC""", conn)
                 conn.close()
+                if not df_hist_chk.empty: st.dataframe(formatar_dataframe_datas(df_hist_chk), use_container_width=True, hide_index=True)
+                else: st.info("Histórico vazio.")
 
-                if not df_hist_chk.empty:
-                    st.dataframe(formatar_dataframe_datas(df_hist_chk), use_container_width=True, hide_index=True)
-                else:
-                    st.info("Nenhum check-list concluído no histórico desta unidade.")
-
-        with tab_inv:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 📊 Inventário Físico & Histórico")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_g_inv"):
-                    st.rerun()
-
-            sub_inv1, sub_inv2 = st.tabs(["Realizar Nova Contagem", "Histórico de Inventários Salvos"])
+        elif menu_selecionado == "📊 Inventário Físico":
+            st.markdown("### 📊 Inventário & Correção de Saldos")
+            sub_inv1, sub_inv2 = st.tabs(["Realizar Contagem", "Histórico de Planilhas"])
             
             with sub_inv1:
-                st.markdown("#### Nova Contagem de Estoque")
                 conn = get_db_connection()
                 df_produtos_inv = pd.read_sql("SELECT codigo, descricao FROM produtos", conn)
                 conn.close()
-
-                termo_busca = st.text_input("🔍 Buscar item por nome ou código para contagem:")
-                if termo_busca.strip():
-                    df_produtos_inv = df_produtos_inv[df_produtos_inv['descricao'].str.contains(termo_busca, case=False, na=False) | df_produtos_inv['codigo'].str.contains(termo_busca, case=False, na=False)]
+                
+                termo = st.text_input("🔍 Filtrar itens para contagem:")
+                if termo: df_produtos_inv = df_produtos_inv[df_produtos_inv['descricao'].str.contains(termo, case=False, na=False)]
 
                 if not df_produtos_inv.empty:
-                    # Sem form global com enter para evitar disparos acidentais
+                    st.info("⚠️ Digite as contagens corretas. Tudo que estiver preenchido irá sobrescrever o saldo atual. Salve usando EXCLUSIVAMENTE o botão no fim da lista.")
                     contagens_usuario = {}
-                    st.info("💡 Digite as contagens desejadas e clique explicitamente no botão ao final da página para salvar.")
                     for idx, row in df_produtos_inv.iterrows():
                         col_i1, col_i2, col_i3 = st.columns([1, 3, 2])
-                        with col_i1:
-                            st.text(row['codigo'])
-                        with col_i2:
-                            st.text(row['descricao'])
-                        with col_i3:
-                            contagens_usuario[row['codigo']] = st.number_input(f"Contagem {row['codigo']}", min_value=0.0, value=0.0, step=1.0, key=f"inv_{row['codigo']}", label_visibility="collapsed")
+                        col_i1.text(row['codigo'])
+                        col_i2.text(row['descricao'])
+                        contagens_usuario[row['codigo']] = col_i3.number_input(f"Contagem", min_value=0.0, value=0.0, step=1.0, key=f"inv_{row['codigo']}", label_visibility="collapsed")
                         st.markdown("---")
 
-                    if st.button("💾 Salvar Contagem e Ajustar Estoque da Unidade", use_container_width=True):
-                        dados_csv = []
+                    if st.button("💾 Sobrescrever Saldos da Unidade com Nova Contagem", use_container_width=True):
                         data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        
+                        dados_csv = []
                         conn = get_db_connection()
                         try:
                             cursor = conn.cursor()
                             for idx, row in df_produtos_inv.iterrows():
                                 c_real = contagens_usuario[row['codigo']]
-                                dados_csv.append({
-                                    "cód": row['codigo'],
-                                    "nome": row['descricao'],
-                                    "contagem": c_real
-                                })
+                                dados_csv.append({"cód": row['codigo'], "nome": row['descricao'], "contagem": c_real})
                                 
                                 cursor.execute("DELETE FROM estoque_lotes WHERE loja = ? AND codigo = ?", (loja_atual, row['codigo']))
                                 if c_real > 0:
-                                    cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                                                   (row['codigo'], loja_atual, c_real, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")))
+                                    cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)", (row['codigo'], loja_atual, c_real, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")))
                             
-                            df_resultado_inv = pd.DataFrame(dados_csv)
-                            csv_string = df_resultado_inv.to_csv(index=False, sep=';', encoding='utf-8-sig')
-                            
-                            cursor.execute("INSERT INTO inventarios_salvos (data, loja, responsavel, dados_csv) VALUES (?, ?, ?, ?)",
-                                           (data_hora, loja_atual, st.session_state.usuario, csv_string))
-                            cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                           (data_hora, st.session_state.usuario, loja_atual, "INVENTARIO_AJUSTE", f"Inventário físico realizado e estoque da loja {loja_atual} ajustado."))
+                            csv_string = pd.DataFrame(dados_csv).to_csv(index=False, sep=';', encoding='utf-8-sig')
+                            cursor.execute("INSERT INTO inventarios_salvos (data, loja, responsavel, dados_csv) VALUES (?, ?, ?, ?)", (data_hora, loja_atual, st.session_state.usuario, csv_string))
+                            cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)", (data_hora, st.session_state.usuario, loja_atual, "INVENTARIO", f"Ajuste em lote."))
                             conn.commit()
-                        finally:
-                            conn.close()
-                        
-                        st.success("Contagem salva e estoque da unidade ajustado com sucesso! Acesse a aba 'Histórico' para baixar o CSV.")
-                else:
-                    st.info("Nenhum produto encontrado.")
+                        finally: conn.close()
+                        st.success("Inventário aplicado com sucesso!")
+                else: st.info("Não há itens para exibir.")
 
             with sub_inv2:
-                st.markdown("#### 📂 Histórico de Inventários Realizados")
                 conn = get_db_connection()
                 df_hist_inv = pd.read_sql(f"SELECT id_inventario, data, responsavel FROM inventarios_salvos WHERE loja = '{loja_atual}' ORDER BY id_inventario DESC", conn)
                 conn.close()
-
                 if not df_hist_inv.empty:
                     st.dataframe(formatar_dataframe_datas(df_hist_inv), use_container_width=True, hide_index=True)
-                    
-                    inv_id_sel = st.selectbox("Selecione o ID do Inventário para Baixar o CSV", df_hist_inv['id_inventario'].tolist())
+                    inv_id_sel = st.selectbox("Selecione ID para baixar CSV:", df_hist_inv['id_inventario'].tolist())
                     if inv_id_sel:
                         conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT dados_csv, data FROM inventarios_salvos WHERE id_inventario = ?", (inv_id_sel,))
-                        res_inv = cursor.fetchone()
+                        res_inv = conn.execute("SELECT dados_csv, data FROM inventarios_salvos WHERE id_inventario = ?", (inv_id_sel,)).fetchone()
                         conn.close()
-                        
-                        if res_inv:
-                            csv_conteudo = res_inv[0]
-                            data_inv = res_inv[1].replace(':', '-').replace(' ', '_')
-                            st.download_button(
-                                label="📥 Baixar Arquivo CSV deste Inventário (cód;nome;contagem)",
-                                data=csv_conteudo,
-                                file_name=f"inventario_{loja_atual.lower().replace(' ', '_')}_{data_inv}.csv",
-                                mime="text/csv",
-                                use_container_width=True
-                            )
-                else:
-                    st.info("Nenhum inventário salvo no histórico desta unidade.")
+                        st.download_button("📥 Baixar Planilha CSV do Inventário", data=res_inv[0], file_name=f"inv_{loja_atual}_{res_inv[1][:10]}.csv", mime="text/csv", use_container_width=True)
 
-        with tab_alertas:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 🚨 Painel de Alertas de Validade (Próximos 7 Dias) & Estoque Mínimo")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_g_al"):
-                    st.rerun()
-
+        elif menu_selecionado == "🚨 Alertas da Loja":
+            st.markdown("### 🚨 Painel de Segurança e Vencimentos (7 dias)")
             conn = get_db_connection()
-            limite_aviso = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
-            
-            df_validades_loja = pd.read_sql(f"""
-                SELECT l.codigo, p.descricao, SUM(l.quantidade) as total_qtd, l.validade
-                FROM estoque_lotes l
-                JOIN produtos p ON l.codigo = p.codigo
-                WHERE l.loja = '{loja_atual}'
-                GROUP BY l.codigo, l.validade
-                HAVING total_qtd > 0 AND l.validade <= '{limite_aviso}'
-            """, conn)
-
-            df_abaixo_loja = pd.read_sql(f"""
-                SELECT p.codigo, p.descricao, COALESCE(SUM(e.quantidade), 0) as qtd_atual, p.estoque_minimo
-                FROM produtos p
-                LEFT JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}'
-                GROUP BY p.codigo
-                HAVING qtd_atual < p.estoque_minimo
-            """, conn)
+            lim = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+            df_val = pd.read_sql(f"""SELECT l.codigo, p.descricao, SUM(l.quantidade) as total_qtd, l.validade FROM estoque_lotes l JOIN produtos p ON l.codigo = p.codigo WHERE l.loja = '{loja_atual}' GROUP BY l.codigo, l.validade HAVING total_qtd > 0 AND l.validade <= '{lim}'""", conn)
+            df_abaixo = pd.read_sql(f"""SELECT p.codigo, p.descricao, COALESCE(SUM(e.quantidade), 0) as qtd_atual, p.estoque_minimo FROM produtos p LEFT JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}' GROUP BY p.codigo HAVING qtd_atual < p.estoque_minimo""", conn)
             conn.close()
 
-            col_ga1, col_ga2 = st.columns(2)
-            with col_ga1:
-                st.markdown("#### ⏳ Vencimento Próximo (7 dias)")
-                if not df_validades_loja.empty:
-                    st.dataframe(formatar_dataframe_datas(df_validades_loja), use_container_width=True, hide_index=True)
-                else:
-                    st.success("Nenhum item próximo ao vencimento.")
-            with col_ga2:
-                st.markdown("#### ⚠️ Estoque Abaixo do Mínimo")
-                if not df_abaixo_loja.empty:
-                    st.dataframe(df_abaixo_loja, use_container_width=True, hide_index=True)
-                else:
-                    st.success("Nenhum item abaixo do mínimo.")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### ⏳ Vencimento Crítico")
+                if not df_val.empty: st.dataframe(formatar_dataframe_datas(df_val), use_container_width=True, hide_index=True)
+                else: st.success("Nenhum item próximo ao vencimento.")
+            with c2:
+                st.markdown("#### ⚠️ Quebra de Estoque Mínimo")
+                if not df_abaixo.empty: st.dataframe(df_abaixo, use_container_width=True, hide_index=True)
+                else: st.success("Abastecimento regular.")
 
-    # --- 2. MÓDULO: ESTOQUISTA / ESTOQUISTA CHEFE ---
+    # --- ESTOQUISTAS ---
     elif perfil_atual in ["Estoquista", "Estoquista Chefe"]:
-        st.markdown(f"### ⚙️ Painel de Operações da Unidade — {loja_atual}")
         
-        if perfil_atual == "Estoquista Chefe":
-            tab_conf, tab_est, tab_xml, tab_manual, tab_baixa, tab_alertas_ch = st.tabs([
-                "📥 Pedidos da Unidade", "📋 Estoque Atual", "📥 Importar XML (Entrada)", "✍️ Entrada Manual", "⚠️ Baixa com Motivo", "🚨 Alertas & Vencimentos"
-            ])
-        else:
-            tab_conf, tab_est, tab_xml, tab_manual, tab_alertas_ch = st.tabs([
-                "📥 Pedidos da Unidade", "📋 Estoque Atual", "📥 Importar XML (Entrada)", "✍️ Entrada Manual", "🚨 Alertas & Vencimentos"
-            ])
-
-        with tab_conf:
-            sub_c1, sub_c2 = st.tabs(["📦 Pedidos Pendentes (Separar)", "🖨️ Histórico de Separações & PDFs por Lote"])
-
+        if menu_selecionado == "📥 Pedidos para Separação":
+            sub_c1, sub_c2 = st.tabs(["📦 Fila de Pedidos", "🖨️ Relatórios (Lotes)"])
             with sub_c1:
-                col_t1, col_t2 = st.columns([5, 1])
-                with col_t1:
-                    st.markdown("### 📋 Avaliação e Separação de Pedidos Internos")
-                with col_t2:
-                    if st.button("🔄 Atualizar", key="ref_e_conf"):
-                        st.rerun()
-
+                st.markdown("### 📋 Painel de Separação de Requisições")
                 conn = get_db_connection()
-                df_reqs_estoque = pd.read_sql(f"""
-                    SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.codigo, p.descricao, r.qtd_pedida, r.status
-                    FROM requisicoes_loja r
-                    JOIN produtos p ON r.codigo_produto = p.codigo
-                    WHERE r.loja = '{loja_atual}' AND r.status = 'Aguardando Conferência'
-                """, conn)
+                df_reqs_estoque = pd.read_sql(f"""SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.codigo, p.descricao, r.qtd_pedida, r.status FROM requisicoes_loja r JOIN produtos p ON r.codigo_produto = p.codigo WHERE r.loja = '{loja_atual}' AND r.status = 'Aguardando Conferência'""", conn)
                 conn.close()
 
                 if not df_reqs_estoque.empty:
                     st.dataframe(formatar_dataframe_datas(df_reqs_estoque), use_container_width=True, hide_index=True)
                     
                     with st.form("form_conferencia_estoquista", clear_on_submit=True):
-                        id_conf = st.selectbox("Selecione o ID do Pedido para Separar", df_reqs_estoque['id_pedido'].tolist())
+                        id_conf = st.selectbox("Apontar ID do Pedido para Executar Separação", df_reqs_estoque['id_pedido'].tolist())
                         item_req = df_reqs_estoque[df_reqs_estoque['id_pedido'] == id_conf].iloc[0]
-                        
-                        st.info(f"📋 **Item:** {item_req['descricao']} | 📥 **Solicitado:** {item_req['qtd_pedida']}")
+                        st.info(f"**Requisitado:** {item_req['qtd_pedida']}x {item_req['descricao']}")
                         
                         conn_lotes = get_db_connection()
-                        df_lotes_disp = pd.read_sql(f"""
-                            SELECT validade, SUM(quantidade) as qtd 
-                            FROM estoque_lotes 
-                            WHERE codigo = '{item_req['codigo']}' AND loja = '{loja_atual}' 
-                            GROUP BY validade 
-                            HAVING qtd > 0 
-                            ORDER BY validade ASC
-                        """, conn_lotes)
+                        df_lotes_disp = pd.read_sql(f"""SELECT validade, SUM(quantidade) as qtd FROM estoque_lotes WHERE codigo = '{item_req['codigo']}' AND loja = '{loja_atual}' GROUP BY validade HAVING qtd > 0 ORDER BY validade ASC""", conn_lotes)
                         conn_lotes.close()
 
-                        st.markdown("#### 📦 Selecione as quantidades a separar por Lote (Validade):")
+                        st.markdown("#### Lotes Disponíveis:")
                         entradas_lotes = {}
                         if not df_lotes_disp.empty:
                             for i, row_lote in df_lotes_disp.iterrows():
                                 val_str = row_lote['validade']
-                                qtd_disp = row_lote['qtd']
                                 val_br = formatar_data_br(val_str)
-                                entradas_lotes[val_str] = st.number_input(f"Lote: {val_br} (Disp: {qtd_disp})", min_value=0.0, max_value=float(qtd_disp), value=0.0, step=1.0, key=f"conf_lote_{i}")
-                        else:
-                            st.info("ℹ️ Nenhum lote com saldo positivo encontrado. Informe a quantidade e validade abaixo.")
+                                entradas_lotes[val_str] = st.number_input(f"Separar do Lote: {val_br} (Saldo Físico: {row_lote['qtd']})", min_value=0.0, max_value=float(row_lote['qtd']), value=0.0, step=1.0, key=f"conf_lote_{i}")
+                        else: st.warning("Estoque físico de lotes zerado. Use o apontamento manual abaixo para liberar excedentes.")
 
                         st.markdown("---")
-                        st.markdown("**Outra validade ou Quantidade Excedente (Permite Saldo Negativo):**")
                         col_e1, col_e2 = st.columns(2)
-                        with col_e1:
-                            qtd_outra = st.number_input("Qtd de Outra Validade / Excedente", min_value=0.0, value=0.0, step=1.0)
-                        with col_e2:
-                            val_outra = st.date_input("Data da Validade", value=None, format="DD/MM/YYYY")
+                        with col_e1: qtd_outra = st.number_input("Apontar Qtd Excedente (Ficará Negativo)", min_value=0.0, value=0.0, step=1.0)
+                        with col_e2: val_outra = st.date_input("Validade Desta Qtd", value=None, format="DD/MM/YYYY")
 
-                        motivo_div = st.text_input("Motivo de Divergência (Obrigatório se Total Separado ≠ Solicitado)")
+                        motivo_div = st.text_input("Gatilho de Divergência (Justifique caso a qtd separada não bata com a pedida)")
                         
-                        btn_salvar_conf = st.form_submit_button("📤 Confirmar Separação", use_container_width=True)
-                        
-                        if btn_salvar_conf:
+                        if st.form_submit_button("📤 Registrar Envio & Imprimir para Check-list", use_container_width=True):
                             qtd_total_enviada = sum(entradas_lotes.values()) + qtd_outra
                             
                             partes_val = []
                             for v_str, q in entradas_lotes.items():
-                                if q > 0:
-                                    partes_val.append(f"{q}x ({formatar_data_br(v_str)})")
-                            if qtd_outra > 0 and val_outra:
-                                partes_val.append(f"{qtd_outra}x ({val_outra.strftime('%d/%m/%Y')})")
-                            elif qtd_outra > 0 and not val_outra:
-                                partes_val.append(f"{qtd_outra}x (Data Atual)")
-                            
+                                if q > 0: partes_val.append(f"{q}x ({formatar_data_br(v_str)})")
+                            if qtd_outra > 0 and val_outra: partes_val.append(f"{qtd_outra}x ({val_outra.strftime('%d/%m/%Y')})")
+                            elif qtd_outra > 0 and not val_outra: partes_val.append(f"{qtd_outra}x (Data Atual)")
                             val_sug_final = " | ".join(partes_val)
 
-                            if qtd_total_enviada == 0:
-                                st.warning("⚠️ Você precisa separar pelo menos uma unidade maior que zero!")
-                            elif qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
-                                st.warning("⚠️ Como a quantidade separada é diferente da solicitada, o motivo de divergência é obrigatório!")
+                            if qtd_total_enviada == 0: st.error("Separe ao menos 1 item.")
+                            elif qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip(): st.error("Divergência de quantidades exige preenchimento do motivo!")
                             else:
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                
                                 conn = get_db_connection()
                                 try:
                                     cursor = conn.cursor()
-                                    cursor.execute("""UPDATE requisicoes_loja 
-                                                      SET qtd_enviada_estoque = ?, motivo_divergencia = ?, validade_sugerida = ?, status = 'Pronto para Check-list' 
-                                                      WHERE id_pedido = ?""",
-                                                   (qtd_total_enviada, motivo_div.strip(), val_sug_final, id_conf))
-                                    
-                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                                   (data_hora, st.session_state.usuario, loja_atual, "SEPARACAO_PEDIDO", f"Separação item #{id_conf}: Qtd total={qtd_total_enviada}"))
+                                    cursor.execute("""UPDATE requisicoes_loja SET qtd_enviada_estoque = ?, motivo_divergencia = ?, validade_sugerida = ?, status = 'Pronto para Check-list' WHERE id_pedido = ?""", (qtd_total_enviada, motivo_div.strip(), val_sug_final, id_conf))
+                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)", (data_hora, st.session_state.usuario, loja_atual, "SEPARACAO_PEDIDO", f"Separação liberada."))
                                     conn.commit()
-                                finally:
-                                    conn.close()
-                                st.success("Separação confirmada com sucesso! O pedido foi liberado para o check-list final da unidade.")
+                                finally: conn.close()
+                                st.success("Encaminhado para a aba de Checklist (Painel Gerente)!")
                                 st.rerun()
-                else:
-                    st.info("Nenhum pedido pendente no momento.")
+                else: st.info("Fila livre.")
 
             with sub_c2:
-                st.markdown("### 🖨️ Histórico de Lotes Finalizados & Download em PDF Consolidado")
                 conn = get_db_connection()
-                df_hist_lotes = pd.read_sql(f"""
-                    SELECT DISTINCT lote_id, data, solicitante, status
-                    FROM requisicoes_loja
-                    WHERE loja = '{loja_atual}' AND status != 'Aguardando Conferência'
-                    ORDER BY id_pedido DESC
-                """, conn)
+                df_hist_lotes = pd.read_sql(f"""SELECT DISTINCT lote_id, data, solicitante, status FROM requisicoes_loja WHERE loja = '{loja_atual}' AND status != 'Aguardando Conferência' ORDER BY id_pedido DESC""", conn)
                 conn.close()
-
                 if not df_hist_lotes.empty:
                     st.dataframe(formatar_dataframe_datas(df_hist_lotes), use_container_width=True, hide_index=True)
-                    
-                    lote_sel_pdf = st.selectbox("Selecione o Lote ID para Baixar o PDF Consolidado", df_hist_lotes['lote_id'].tolist(), key="sel_hist_pdf_lote")
+                    lote_sel_pdf = st.selectbox("Selecione ID do Lote para Geração de PDF Impresso", df_hist_lotes['lote_id'].tolist())
                     if lote_sel_pdf:
                         pdf_buffer = gerar_pdf_lote_conferencia(lote_sel_pdf, loja_atual)
-                        st.download_button(
-                            label="📥 Baixar Relatório do Lote em PDF",
-                            data=pdf_buffer,
-                            file_name=f"relatorio_lote_{lote_sel_pdf}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True
-                        )
-                else:
-                    st.info("Nenhum lote finalizado no histórico ainda.")
+                        st.download_button("📥 Gerar PDF de Separação", data=pdf_buffer, file_name=f"lote_{lote_sel_pdf}.pdf", mime="application/pdf", use_container_width=True)
 
-        with tab_est:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 📦 Saldo Atual da Unidade")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_e_est"):
-                    st.rerun()
-
+        elif menu_selecionado == "📦 Consulta de Estoque":
+            st.markdown("### 📦 Saldos Consolidados e Detalhados")
             conn = get_db_connection()
-            df_estoque = pd.read_sql(f"""
-                SELECT p.codigo, p.codigo_barras, p.codigo_fornecedor, p.descricao, p.categoria, p.unidade, COALESCE(SUM(e.quantidade), 0) as quantidade_total, p.estoque_minimo, p.custo
-                FROM produtos p
-                LEFT JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}'
-                GROUP BY p.codigo
-            """, conn)
+            df_estoque = pd.read_sql(f"""SELECT p.codigo, p.codigo_barras, p.codigo_fornecedor, p.descricao, p.categoria, p.unidade, COALESCE(SUM(e.quantidade), 0) as quantidade_total, p.estoque_minimo, p.custo FROM produtos p LEFT JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}' GROUP BY p.codigo""", conn)
             conn.close()
             
             if not df_estoque.empty:
-                st.dataframe(df_estoque[['codigo', 'codigo_barras', 'codigo_fornecedor', 'descricao', 'categoria', 'quantidade_total', 'unidade', 'estoque_minimo', 'custo']], use_container_width=True, hide_index=True)
+                st.dataframe(df_estoque[['codigo', 'descricao', 'quantidade_total', 'unidade', 'estoque_minimo']], use_container_width=True, hide_index=True)
                 
                 st.markdown("---")
-                st.markdown("#### 🔍 Detalhamento de Saldos por Validade (Lotes / Permite Negativos)")
-                prod_detalhe = st.selectbox("Selecione um produto para ver os lotes e validades", df_estoque['descricao'].tolist())
+                st.markdown("#### 🔍 Detalhes por Lote/Validade (Inclui Furos/Negativos)")
+                prod_detalhe = st.selectbox("Analisar Lotes de:", df_estoque['descricao'].tolist())
                 cod_sel = df_estoque.loc[df_estoque['descricao'] == prod_detalhe, 'codigo'].values[0]
                 
                 conn = get_db_connection()
-                df_lotes_prod = pd.read_sql(f"""
-                    SELECT validade as Validade, SUM(quantidade) as Quantidade
-                    FROM estoque_lotes 
-                    WHERE codigo = '{cod_sel}' AND loja = '{loja_atual}' 
-                    GROUP BY validade 
-                    HAVING Quantidade != 0 
-                    ORDER BY validade ASC
-                """, conn)
+                df_lotes_prod = pd.read_sql(f"""SELECT validade as Validade, SUM(quantidade) as Quantidade FROM estoque_lotes WHERE codigo = '{cod_sel}' AND loja = '{loja_atual}' GROUP BY validade HAVING Quantidade != 0 ORDER BY validade ASC""", conn)
                 conn.close()
-                
-                if not df_lotes_prod.empty:
-                    st.dataframe(formatar_dataframe_datas(df_lotes_prod), use_container_width=True, hide_index=True)
-                else:
-                    st.info("Nenhum lote com saldo registrado para este item.")
-            else:
-                st.info("Nenhum produto cadastrado.")
+                if not df_lotes_prod.empty: st.dataframe(formatar_dataframe_datas(df_lotes_prod), use_container_width=True, hide_index=True)
+                else: st.info("Item não movimentado na base de lotes.")
             
-        with tab_xml:
-            st.markdown("### 📥 Importação de NF-e (Quantidade Fixa da Nota & Unidade Física Editável)")
-            xml_file = st.file_uploader("Arquivo XML da Nota Fiscal", type=["xml"], key="upload_xml_nota")
-            
-            if xml_file is not None:
+        elif menu_selecionado == "📄 Importar NF-e (XML)":
+            st.markdown("### 📥 Rotina de Importação Fiscal Automática (XML)")
+            xml_file = st.file_uploader("Submeta o Arquivo XML XML/NFe", type=["xml"])
+            if xml_file:
                 try:
                     tree = ET.parse(xml_file)
-                    root = tree.getroot()
                     ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
+                    inf_nfe = tree.getroot().find('.//nfe:infNFe', ns)
+                    chave_nfe = inf_nfe.get('Id', '').replace('NFe', '') if inf_nfe is not None else tree.getroot().find('.//nfe:ide/nfe:nNF', ns).text
                     
-                    inf_nfe = root.find('.//nfe:infNFe', ns)
-                    chave_nfe = inf_nfe.get('Id', '').replace('NFe', '') if inf_nfe is not None else ""
-                    
-                    if not chave_nfe:
-                        nNF_el = root.find('.//nfe:ide/nfe:nNF', ns)
-                        chave_nfe = nNF_el.text if nNF_el is not None else "XML-GENERICO"
-
                     conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT chave_nfe FROM nfs_importadas WHERE chave_nfe = ?", (chave_nfe,))
-                    ja_importada = cursor.fetchone()
+                    ja_importada = conn.execute("SELECT chave_nfe FROM nfs_importadas WHERE chave_nfe = ?", (chave_nfe,)).fetchone()
                     conn.close()
 
-                    if ja_importada:
-                        st.error(f"❌ Esta Nota Fiscal (Chave/Número: {chave_nfe}) já foi importada anteriormente no sistema! A importação foi bloqueada.")
+                    if ja_importada: st.error(f"❌ Nota {chave_nfe} recusada (Duplicidade).")
                     else:
-                        det_list = root.findall('.//nfe:det', ns)
                         itens_nf = []
-                        for det in det_list:
-                            prod = det.find('nfe:prod', ns)
-                            c_prod = prod.find('nfe:cProd', ns).text if prod.find('nfe:cProd', ns) is not None else "SEM-COD"
-                            x_prod = prod.find('nfe:xProd', ns).text if prod.find('nfe:xProd', ns) is not None else "Produto sem descrição"
-                            q_com = float(prod.find('nfe:qCom', ns).text) if prod.find('nfe:qCom', ns) is not None else 0.0
-                            v_un = float(prod.find('nfe:vUnCom', ns).text) if prod.find('nfe:vUnCom', ns) is not None else 0.0
-                            u_com_xml = prod.find('nfe:uCom', ns).text if prod.find('nfe:uCom', ns) is not None else "un"
-                            itens_nf.append({"Código": c_prod, "Descrição": x_prod, "Qtd": q_com, "UnidadeXML": u_com_xml, "Custo": v_un})
+                        for det in tree.getroot().findall('.//nfe:det', ns):
+                            p = det.find('nfe:prod', ns)
+                            itens_nf.append({
+                                "Código": p.find('nfe:cProd', ns).text if p.find('nfe:cProd', ns) is not None else "S/C", 
+                                "Descrição": p.find('nfe:xProd', ns).text, 
+                                "Qtd": float(p.find('nfe:qCom', ns).text), 
+                                "UnidadeXML": p.find('nfe:uCom', ns).text, 
+                                "Custo": float(p.find('nfe:vUnCom', ns).text)
+                            })
                         
-                        st.markdown(f"**NF-e Identificada:** `{chave_nfe}` | **Total de Itens:** `{len(itens_nf)}`")
-                        st.markdown("---")
-                        
+                        st.info(f"Processando Chave: `{chave_nfe}` | Itens Localizados: {len(itens_nf)}")
                         with st.form("form_confirma_xml", clear_on_submit=True):
-                            validades_digitadas = {}
-                            unidades_fisicas = {}
-                            
+                            validades, unidades = {}, {}
                             for i, item in enumerate(itens_nf):
-                                st.markdown(f"**Item {i+1}: {item['Descrição']}** (Cód Forn: `{item['Código']}`)")
-                                col_x1, col_x2, col_x3, col_x4 = st.columns(4)
-                                with col_x1:
-                                    st.markdown(f"**Qtd Nota:** `{item['Qtd']}`")
-                                with col_x2:
-                                    unidades_fisicas[i] = st.text_input(f"Unidade Física", value=item['UnidadeXML'], key=f"un_{i}")
-                                with col_x3:
-                                    validades_digitadas[i] = st.date_input(f"Validade", key=f"v_{i}", value=None, format="DD/MM/YYYY")
-                                with col_x4:
-                                    st.write(f"Custo Unit: R$ {item['Custo']:.2f}")
+                                st.markdown(f"**[{item['Código']}] {item['Descrição']}** | NF Qtd: `{item['Qtd']}` | NF V.Unit: `R${item['Custo']:.2f}`")
+                                c_x1, c_x2 = st.columns(2)
+                                unidades[i] = c_x1.text_input("Conversão de Unid. Física (Se necessário)", value=item['UnidadeXML'], key=f"ux_{i}")
+                                validades[i] = c_x2.date_input("Atribuir Validade ao Lote", key=f"vx_{i}", value=None, format="DD/MM/YYYY")
                                 st.markdown("---")
                             
-                            btn_conf_xml = st.form_submit_button("Confirmar Entrada de Todos os Itens da NF-e", use_container_width=True)
-                            
-                            if btn_conf_xml:
+                            if st.form_submit_button("Confirmar Entrada Fiscal Completa", use_container_width=True):
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 conn = get_db_connection()
                                 try:
                                     cursor = conn.cursor()
-                                    
                                     for i, item in enumerate(itens_nf):
-                                        v_escolhida = validades_digitadas[i]
-                                        v_str = v_escolhida.strftime("%Y-%m-%d") if v_escolhida else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
-                                        q_real = item['Qtd']
-                                        un_fisica = unidades_fisicas[i].strip() if unidades_fisicas[i].strip() else item['UnidadeXML']
-                                        cod_forn = item["Código"]
+                                        v_str = validades[i].strftime("%Y-%m-%d") if validades[i] else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
+                                        cod_forn, q_real, un_fisica = item["Código"], item['Qtd'], unidades[i].strip()
+                                        prod_exist = cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,)).fetchone()
                                         
-                                        cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
-                                        prod_existente = cursor.fetchone()
-                                        
-                                        if prod_existente:
-                                            cod_sistema = prod_existente[0]
-                                            cursor.execute("UPDATE produtos SET unidade = ?, custo = ? WHERE codigo = ?", (un_fisica, item['Custo'], cod_sistema))
+                                        if prod_exist:
+                                            cod_sys = prod_exist[0]
+                                            cursor.execute("UPDATE produtos SET unidade = ?, custo = ? WHERE codigo = ?", (un_fisica, item['Custo'], cod_sys))
                                         else:
-                                            cod_sistema = gerar_proximo_codigo_produto(cursor)
-                                            cursor.execute("""INSERT INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) 
-                                                              VALUES (?, '', ?, ?, 'Geral', ?, ?, 5.0)""",
-                                                           (cod_sistema, cod_forn, item['Descrição'], un_fisica, item['Custo']))
+                                            cod_sys = gerar_proximo_codigo_produto(cursor)
+                                            cursor.execute("INSERT INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo) VALUES (?, '', ?, ?, 'Geral', ?, ?)", (cod_sys, cod_forn, item['Descrição'], un_fisica, item['Custo']))
                                         
-                                        cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                                                       (cod_sistema, loja_atual, q_real, v_str))
+                                        cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)", (cod_sys, loja_atual, q_real, v_str))
                                     
-                                    cursor.execute("INSERT OR REPLACE INTO nfs_importadas (chave_nfe, data_importacao, loja) VALUES (?, ?, ?)",
-                                                   (chave_nfe, data_hora, loja_atual))
-                                    
-                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                                   (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_XML", f"Entrada NF-e chave {chave_nfe} em {loja_atual} com {len(itens_nf)} itens."))
-                                    
+                                    cursor.execute("INSERT INTO nfs_importadas (chave_nfe, data_importacao, loja) VALUES (?, ?, ?)", (chave_nfe, data_hora, loja_atual))
                                     conn.commit()
-                                    st.success("🎉 Todos os itens da Nota Fiscal foram cadastrados e deram entrada no estoque com sucesso!")
-                                except Exception as db_err:
-                                    st.error(f"Erro durante gravação no banco: {db_err}")
-                                finally:
-                                    conn.close()
-                except Exception as e:
-                    st.error(f"❌ Erro ao processar o XML: {e}")
+                                    st.success("Nota incorporada no ERP com sucesso!")
+                                finally: conn.close()
 
-        with tab_manual:
-            st.markdown("### ✍️ Entrada Manual de Estoque")
+        elif menu_selecionado == "✍️ Lançamento Manual":
+            st.markdown("### ✍️ Lançamento Unitário Direto")
             conn = get_db_connection()
             df_prods_m = pd.read_sql("SELECT codigo, descricao, unidade FROM produtos", conn)
             conn.close()
-            
             if not df_prods_m.empty:
                 with st.form("form_entrada_manual", clear_on_submit=True):
-                    prod_sel_m = st.selectbox("Selecione o Produto", df_prods_m['descricao'].tolist())
-                    unid_reg = df_prods_m.loc[df_prods_m['descricao'] == prod_sel_m, 'unidade'].values[0]
+                    prod_sel_m = st.selectbox("Selecione a Referência", df_prods_m['descricao'].tolist())
+                    u_ref = df_prods_m.loc[df_prods_m['descricao'] == prod_sel_m, 'unidade'].values[0]
+                    c1, c2, c3 = st.columns(3)
+                    q_m = c1.number_input(f"Qtd ({u_ref})", min_value=0.01, step=1.0)
+                    custo_m = c2.number_input("Custo Unit. (R$)", min_value=0.0)
+                    v_m = c3.date_input("Validade", value=None, format="DD/MM/YYYY")
                     
-                    col_m1, col_m2, col_m3 = st.columns(3)
-                    with col_m1:
-                        qtd_m = st.number_input(f"Quantidade ({unid_reg})", min_value=0.0, value=0.0, step=1.0)
-                    with col_m2:
-                        custo_m = st.number_input("Preço Unitário (R$)", min_value=0.0, value=0.0, step=0.01)
-                    with col_m3:
-                        val_m = st.date_input("Validade do Lote (Opcional)", value=None, format="DD/MM/YYYY")
+                    if st.form_submit_button("Injetar Saldo", use_container_width=True):
+                        c_m = df_prods_m.loc[df_prods_m['descricao'] == prod_sel_m, 'codigo'].values[0]
+                        v_str = v_m.strftime("%Y-%m-%d") if v_m else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
+                        conn = get_db_connection()
+                        try:
+                            cursor = conn.cursor()
+                            cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)", (c_m, loja_atual, q_m, v_str))
+                            cursor.execute("UPDATE produtos SET custo = ? WHERE codigo = ?", (custo_m, c_m))
+                            conn.commit()
+                            st.success("Lançamento concluído.")
+                        finally: conn.close()
+
+        elif menu_selecionado == "⚠️ Baixa de Avaria/Vencimento":
+            st.markdown("### ⚠️ Deduzir Estoque Manualmente (Contingência)")
+            conn = get_db_connection()
+            df_est_b = pd.read_sql(f"SELECT p.codigo, p.descricao FROM produtos p JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}' GROUP BY p.codigo", conn)
+            conn.close()
+            if not df_est_b.empty:
+                with st.form("form_baixa_estoque", clear_on_submit=True):
+                    prod_bx = st.selectbox("Referência para Baixa", df_est_b['descricao'].tolist())
+                    c1, c2, c3 = st.columns(3)
+                    q_bx = c1.number_input("Qtd", min_value=0.1, step=1.0)
+                    mot_bx = c2.text_input("Gatilho/Motivo (Obrigatório)")
+                    val_bx = c3.date_input("Validade Afetada", value=None, format="DD/MM/YYYY")
                     
-                    btn_ent_man = st.form_submit_button("Confirmar Entrada Manual", use_container_width=True)
-                    if btn_ent_man:
-                        if qtd_m <= 0 or custo_m <= 0:
-                            st.warning("⚠️ Informe uma quantidade e preço unitário válidos.")
+                    if st.form_submit_button("Processar Deduzimento", use_container_width=True):
+                        if not mot_bx.strip(): st.error("Falta justificativa.")
                         else:
-                            cod_m = df_prods_m.loc[df_prods_m['descricao'] == prod_sel_m, 'codigo'].values[0]
-                            data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            v_str = val_m.strftime("%Y-%m-%d") if val_m else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
-                            
+                            cod_bx = df_est_b.loc[df_est_b['descricao'] == prod_bx, 'codigo'].values[0]
+                            val_str = val_bx.strftime("%Y-%m-%d") if val_bx else None
                             conn = get_db_connection()
                             try:
                                 cursor = conn.cursor()
-                                cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                                               (cod_m, loja_atual, qtd_m, v_str))
-                                cursor.execute("UPDATE produtos SET custo = ? WHERE codigo = ?", (custo_m, cod_m))
-                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                               (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_MANUAL", f"Entrada manual de {qtd_m} {unid_reg} em {loja_atual}."))
+                                descontar_estoque_fifo_com_negativo(cursor, cod_bx, loja_atual, q_bx, val_str)
                                 conn.commit()
-                            finally:
-                                conn.close()
-                            st.success("Entrada manual registrada com sucesso!")
+                                st.success("Ajuste consolidado.")
+                            finally: conn.close()
 
-        if perfil_atual == "Estoquista Chefe":
-            with tab_baixa:
-                st.markdown("### ⚠️ Baixa Manual de Estoque (Avaria / Vencimento)")
-                conn = get_db_connection()
-                df_est_b = pd.read_sql(f"""
-                    SELECT p.codigo, p.descricao, SUM(e.quantidade) as quantidade
-                    FROM produtos p
-                    JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}'
-                    GROUP BY p.codigo
-                """, conn)
-                conn.close()
-                
-                if not df_est_b.empty:
-                    with st.form("form_baixa_estoque", clear_on_submit=True):
-                        prod_baixa = st.selectbox("Selecione o Produto", df_est_b['descricao'].tolist())
-                        
-                        col_b1, col_b2 = st.columns(2)
-                        with col_b1:
-                            qtd_baixa = st.number_input("Quantidade a Retirar", min_value=0.1, step=1.0)
-                        with col_b2:
-                            motivo_baixa = st.text_input("Motivo (Avaria, Vencimento, etc.)")
-                        
-                        btn_conf_baixa = st.form_submit_button("Confirmar Baixa", use_container_width=True)
-                        if btn_conf_baixa:
-                            if not motivo_baixa.strip():
-                                st.warning("O motivo é obrigatório!")
-                            else:
-                                cod_b = df_est_b.loc[df_est_b['descricao'] == prod_baixa, 'codigo'].values[0]
-                                data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                conn = get_db_connection()
-                                try:
-                                    cursor = conn.cursor()
-                                    descontar_estoque_fifo_com_negativo(cursor, cod_b, loja_atual, qtd_baixa, datetime.now().strftime("%Y-%m-%d"))
-                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                                   (data_hora, st.session_state.usuario, loja_atual, "BAIXA_ESTOQUE", f"Baixa de {qtd_baixa} em {loja_atual}. Motivo: {motivo_baixa}"))
-                                    conn.commit()
-                                finally:
-                                    conn.close()
-                                st.success("Baixa realizada com sucesso!")
-                                st.rerun()
-                else:
-                    st.info("Nenhum produto cadastrado.")
-
-        with tab_alertas_ch:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 🚨 Alertas & Vencimentos (Unidade)")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_e_al"):
-                    st.rerun()
-
+        elif menu_selecionado == "🚨 Alertas de Vencimento":
+            st.markdown("### 🚨 Quadro Global de Alertas (Operação)")
             conn = get_db_connection()
-            limite_aviso = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
-            
-            df_validades_ch = pd.read_sql(f"""
-                SELECT l.codigo, p.descricao, SUM(l.quantidade) as total_qtd, l.validade
-                FROM estoque_lotes l
-                JOIN produtos p ON l.codigo = p.codigo
-                WHERE l.loja = '{loja_atual}'
-                GROUP BY l.codigo, l.validade
-                HAVING total_qtd > 0 AND l.validade <= '{limite_aviso}'
-            """, conn)
+            df_val = pd.read_sql(f"""SELECT l.codigo, p.descricao, SUM(l.quantidade) as total_qtd, l.validade FROM estoque_lotes l JOIN produtos p ON l.codigo = p.codigo WHERE l.loja = '{loja_atual}' GROUP BY l.codigo, l.validade HAVING total_qtd > 0 AND l.validade <= '{(datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")}'""", conn)
             conn.close()
+            if not df_val.empty: st.warning("Itens no radar de criticidade:"); st.dataframe(formatar_dataframe_datas(df_val), use_container_width=True, hide_index=True)
+            else: st.success("Operação fluida. Nenhum alerta pendente.")
 
-            if not df_validades_ch.empty:
-                st.warning("⚠️ Os seguintes itens estão próximos da data de vencimento:")
-                st.dataframe(formatar_dataframe_datas(df_validades_ch), use_container_width=True, hide_index=True)
-            else:
-                st.success("Tudo em ordem! Nenhum item próximo ao vencimento nesta unidade.")
-
-    # --- 3. MÓDULO: ADMINISTRADOR GLOBAL ---
+    # --- ADMINISTRADOR ---
     elif perfil_atual == "Administrador":
-        st.markdown("### 👑 Painel Executivo Global")
         
-        tab_alertas, tab_lojas, tab_users, tab_prod, tab_conv, tab_editar_prod, tab_excel, tab_visao, tab_logs = st.tabs([
-            "🚨 Alertas Globais",
-            "🏢 Lojas", 
-            "👥 Usuários", 
-            "✏️ Cadastro Mestre", 
-            "🔄 Conversão de Unidades",
-            "🛠️ Editar Produtos",
-            "📊 Excel",
-            "🌐 Visão Geral",
-            "📜 Logs Filtrados"
-        ])
+        if menu_selecionado == "🚨 Dashboard Global de Alertas":
+            st.markdown("### 🚨 Torre de Controle Corporativa")
+            conn = get_db_connection()
+            df_abx = pd.read_sql("SELECT e.loja, p.codigo, p.descricao, COALESCE(SUM(e.quantidade), 0) as qtd_atual, p.estoque_minimo FROM estoque_lotes e JOIN produtos p ON e.codigo = p.codigo GROUP BY e.loja, p.codigo HAVING qtd_atual < p.estoque_minimo", conn)
+            df_vnc = pd.read_sql(f"SELECT e.loja, e.codigo, p.descricao, SUM(e.quantidade) as total_qtd, e.validade FROM estoque_lotes e JOIN produtos p ON e.codigo = p.codigo GROUP BY e.loja, e.codigo, e.validade HAVING total_qtd > 0 AND e.validade <= '{(datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")}'", conn)
+            conn.close()
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### 📉 Rupturas Identificadas")
+                if not df_abx.empty: st.dataframe(df_abx, use_container_width=True, hide_index=True)
+            with c2:
+                st.markdown("#### ⏳ Vencimentos Iminentes (Rede)")
+                if not df_vnc.empty: st.dataframe(formatar_dataframe_datas(df_vnc), use_container_width=True, hide_index=True)
 
-        with tab_alertas:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 🚨 Painel de Executivos: Estoques Críticos e Vencimentos")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_adm_al"):
+        elif menu_selecionado == "🏢 Gestão de Unidades":
+            st.markdown("### 🏢 Infraestrutura Logística (Lojas)")
+            with st.form("form_nova_loja", clear_on_submit=True):
+                nl = st.text_input("Designação Nova Unidade")
+                if st.form_submit_button("Efetivar Criação") and nl.strip():
+                    conn = get_db_connection()
+                    conn.execute("INSERT INTO lojas VALUES (?)", (nl.strip(),)); conn.commit(); conn.close()
+                    st.success("Unidade lançada no sistema.")
                     st.rerun()
 
+        elif menu_selecionado == "👥 Controle de Acessos":
+            st.markdown("### 👥 Gestão de Identidade e Perfis")
             conn = get_db_connection()
-            df_abaixo = pd.read_sql("""
-                SELECT e.loja, p.codigo, p.descricao, COALESCE(SUM(e.quantidade), 0) as qtd_atual, p.estoque_minimo
-                FROM estoque_lotes e
-                JOIN produtos p ON e.codigo = p.codigo
-                GROUP BY e.loja, p.codigo
-                HAVING qtd_atual < p.estoque_minimo
-            """, conn)
-
-            limite_str = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
-            df_venc = pd.read_sql(f"""
-                SELECT e.loja, e.codigo, p.descricao, SUM(e.quantidade) as total_qtd, e.validade
-                FROM estoque_lotes e
-                JOIN produtos p ON e.codigo = p.codigo
-                GROUP BY e.loja, e.codigo, e.validade
-                HAVING total_qtd > 0 AND e.validade <= '{limite_str}'
-            """, conn)
-            conn.close()
-
-            col_al1, col_al2 = st.columns(2)
-            with col_al1:
-                st.markdown("#### ⚠️ Abaixo do Mínimo")
-                if not df_abaixo.empty:
-                    st.dataframe(df_abaixo, use_container_width=True, hide_index=True)
-                else:
-                    st.success("Nenhum item abaixo do mínimo.")
-
-            with col_al2:
-                st.markdown("#### ⏳ Vencimento Próximo (7 dias)")
-                if not df_venc.empty:
-                    st.dataframe(formatar_dataframe_datas(df_venc), use_container_width=True, hide_index=True)
-                else:
-                    st.success("Nenhum vencimento próximo.")
-        
-        with tab_lojas:
-            st.markdown("### 🏢 Gerenciamento de Lojas (Adicionar, Alterar e Excluir)")
-            sub_l1, sub_l2, sub_l3 = st.tabs(["Cadastrar Nova Loja", "Alterar Nome de Loja", "Excluir Loja"])
-            
-            with sub_l1:
-                with st.form("form_nova_loja", clear_on_submit=True):
-                    nova_loja = st.text_input("Nome da Nova Loja")
-                    cad_loja = st.form_submit_button("Cadastrar Loja", use_container_width=True)
-                    if cad_loja and nova_loja.strip():
-                        conn = get_db_connection()
-                        try:
-                            cursor = conn.cursor()
-                            cursor.execute("INSERT INTO lojas VALUES (?)", (nova_loja.strip(),))
-                            conn.commit()
-                            st.success(f"Loja '{nova_loja}' cadastrada com sucesso!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro: {e}")
-                        finally:
-                            conn.close()
-
-            with sub_l2:
-                conn = get_db_connection()
-                df_lojas_alt = pd.read_sql("SELECT * FROM lojas", conn)
-                conn.close()
-                if not df_lojas_alt.empty:
-                    with st.form("form_alterar_loja", clear_on_submit=True):
-                        loja_antiga = st.selectbox("Selecione a Loja para Alterar", df_lojas_alt['nome_loja'].tolist())
-                        novo_nome_loja = st.text_input("Novo Nome da Loja")
-                        btn_alt_loja = st.form_submit_button("Salvar Alteração de Nome", use_container_width=True)
-                        if btn_alt_loja and novo_nome_loja.strip():
-                            conn = get_db_connection()
-                            try:
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE lojas SET nome_loja = ? WHERE nome_loja = ?", (novo_nome_loja.strip(), loja_antiga))
-                                cursor.execute("UPDATE usuarios SET loja = ? WHERE loja = ?", (novo_nome_loja.strip(), loja_antiga))
-                                cursor.execute("UPDATE estoque_lotes SET loja = ? WHERE loja = ?", (novo_nome_loja.strip(), loja_antiga))
-                                cursor.execute("UPDATE requisicoes_loja SET loja = ? WHERE loja = ?", (novo_nome_loja.strip(), loja_antiga))
-                                conn.commit()
-                                st.success(f"Loja alterada com sucesso para '{novo_nome_loja.strip()}'!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro ao alterar: {e}")
-                            finally:
-                                conn.close()
-                else:
-                    st.info("Nenhuma loja cadastrada.")
-
-            with sub_l3:
-                conn = get_db_connection()
-                df_lojas = pd.read_sql("SELECT * FROM lojas", conn)
-                conn.close()
-                if not df_lojas.empty:
-                    with st.form("form_excluir_loja", clear_on_submit=True):
-                        loja_para_excluir = st.selectbox("Selecione uma loja para excluir", df_lojas['nome_loja'].tolist())
-                        btn_del_loja = st.form_submit_button("Excluir Loja Selecionada", use_container_width=True)
-                        if btn_del_loja:
-                            conn = get_db_connection()
-                            try:
-                                cursor = conn.cursor()
-                                cursor.execute("DELETE FROM lojas WHERE nome_loja = ?", (loja_para_excluir,))
-                                cursor.execute("DELETE FROM usuarios WHERE loja = ?", (loja_para_excluir,))
-                                conn.commit()
-                                st.success(f"Loja '{loja_para_excluir}' excluída com sucesso!")
-                                st.rerun()
-                            finally:
-                                conn.close()
-                else:
-                    st.info("Nenhuma loja cadastrada.")
-                    
-            st.markdown("---")
-            conn = get_db_connection()
-            df_lojas_geral = pd.read_sql("SELECT * FROM lojas", conn)
-            conn.close()
-            st.dataframe(df_lojas_geral, use_container_width=True, hide_index=True)
-                
-        with tab_users:
-            st.markdown("### 👥 Gerenciamento de Usuários")
-            conn = get_db_connection()
-            df_l = pd.read_sql("SELECT * FROM lojas", conn)
-            conn.close()
-            lista_lojas_cad = df_l['nome_loja'].tolist() if not df_l.empty else []
-            lista_lojas_cad.insert(0, "Geral")
-            
+            ll = ["Geral"] + [x[0] for x in conn.execute("SELECT nome_loja FROM lojas").fetchall()]
             with st.form("form_novo_usuario", clear_on_submit=True):
-                col_u1, col_u2 = st.columns(2)
-                with col_u1:
-                    u_nome = st.text_input("Usuário (Login)")
-                    u_senha = st.text_input("Senha", type="password")
-                with col_u2:
-                    u_perfil = st.selectbox("Perfil de Acesso", ["Gerente", "Estoquista", "Estoquista Chefe", "Administrador"])
-                    u_loja = st.selectbox("Loja Vinculada", lista_lojas_cad)
+                c1, c2 = st.columns(2)
+                u_id = c1.text_input("User ID (Login)")
+                u_pass = c1.text_input("Password", type="password")
+                u_prf = c2.selectbox("Escopo", ["Gerente", "Estoquista", "Estoquista Chefe", "Administrador"])
+                u_lj = c2.selectbox("Atribuição Matriz/Filial", ll)
                 
-                cad_user = st.form_submit_button("Salvar / Alterar Usuário", use_container_width=True)
-                if cad_user and u_nome.strip() and u_senha.strip():
-                    conn = get_db_connection()
-                    try:
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT OR REPLACE INTO usuarios VALUES (?, ?, ?, ?)", (u_nome.strip(), u_senha, u_perfil, u_loja))
-                        conn.commit()
-                        st.success("Usuário salvo com sucesso!")
-                        st.rerun()
-                    finally:
-                        conn.close()
-                    
-            st.markdown("---")
-            conn = get_db_connection()
-            df_users = pd.read_sql("SELECT * FROM usuarios", conn)
+                if st.form_submit_button("Gerar Credencial", use_container_width=True) and u_id:
+                    conn.execute("INSERT OR REPLACE INTO usuarios VALUES (?, ?, ?, ?)", (u_id.strip(), u_pass, u_prf, u_lj)); conn.commit()
+                    st.success("Sincronizado.")
+            st.dataframe(pd.read_sql("SELECT * FROM usuarios", conn), use_container_width=True, hide_index=True)
             conn.close()
-            st.dataframe(df_users, use_container_width=True, hide_index=True)
 
-        with tab_prod:
-            st.markdown("### ✏️ Cadastro Mestre de Produtos")
+        elif menu_selecionado == "✏️ Cadastro Mestre de Itens":
+            st.markdown("### ✏️ Padrão Base de Produtos")
             with st.form("form_cad_produto", clear_on_submit=True):
-                col_p1, col_p2, col_p3 = st.columns(3)
-                with col_p1:
-                    c_cod = st.text_input("Código Principal")
-                    c_barras = st.text_input("Código de Barras (Opcional)")
-                    c_forn = st.text_input("Código do Fornecedor (Opcional)")
-                with col_p2:
-                    c_desc = st.text_input("Descrição do Item")
-                    c_cat = st.text_input("Categoria")
-                with col_p3:
-                    c_un = st.text_input("Unidade (Ex: un, Cx, Fd, kg, L)")
-                    c_min = st.number_input("Estoque Mínimo", min_value=0.0, value=5.0, step=1.0)
-                    c_custo = st.number_input("Custo (R$)", min_value=0.0)
-                
-                salvar_prod = st.form_submit_button("Cadastrar Produto Mestre", use_container_width=True)
-                if salvar_prod and c_cod.strip():
+                c1, c2, c3 = st.columns(3)
+                c_cod = c1.text_input("Codig. SKU Padrão")
+                c_bar = c1.text_input("EAN")
+                c_frn = c2.text_input("Cód. Fornecedor")
+                c_dsc = c2.text_input("Descrição Descritiva")
+                c_cat = c3.text_input("Categoria")
+                c_und = c3.text_input("Métrica (UN, KG)")
+                c_min = st.number_input("Ruptura Mínima", value=5.0)
+                if st.form_submit_button("Consolidar Regra") and c_cod:
                     conn = get_db_connection()
-                    try:
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT OR REPLACE INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                       (c_cod.strip(), c_barras.strip(), c_forn.strip(), c_desc.strip(), c_cat.strip(), c_un.strip(), c_custo, c_min))
-                        conn.commit()
-                        st.success("Produto cadastrado com sucesso!")
-                    finally:
-                        conn.close()
+                    conn.execute("INSERT OR REPLACE INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) VALUES (?, ?, ?, ?, ?, ?, 0, ?)", (c_cod, c_bar, c_frn, c_dsc, c_cat, c_und, c_min)); conn.commit(); conn.close()
+                    st.success("Armazenado com êxito na matriz de dados.")
 
-        with tab_conv:
-            st.markdown("### 🔄 Cadastro de Equivalência e Fatores de Conversão")
-            st.markdown("*(Exemplo: 1 Caixa (Cx) equivale a 12 Fardos (Fd) ou 1 Fardo (Fd) equivale a 24 Unidades (un).)*")
-            
+        elif menu_selecionado == "🔄 Regras de Conversão":
+            st.info("Módulo reservado para engenharia de frações (Ex: Caixa -> Unidade). Em construção para atualização estrutural futura.")
+        
+        elif menu_selecionado == "🛠️ Ajuste de Produtos":
+            st.markdown("### 🛠️ Editor Mestre")
             conn = get_db_connection()
-            df_prods_conv = pd.read_sql("SELECT codigo, descricao FROM produtos", conn)
-            conn.close()
-            
-            if not df_prods_conv.empty:
-                with st.form("form_cad_conversao", clear_on_submit=True):
-                    p_sel_conv = st.selectbox("Selecione o Produto", df_prods_conv['descricao'].tolist())
-                    
-                    col_cv1, col_cv2, col_cv3 = st.columns(3)
-                    with col_cv1:
-                        un_origem = st.text_input("Unidade Origem (Ex: Cx)", value="Cx")
-                    with col_cv2:
-                        un_destino = st.text_input("Unidade Destino (Ex: Fd)", value="Fd")
-                    with col_cv3:
-                        fator = st.number_input("Fator de Equivalência (Quantos Destino cabem na Origem)", min_value=0.001, value=1.0, step=1.0)
-                    
-                    btn_salvar_conv = st.form_submit_button("Salvar Regra de Conversão", use_container_width=True)
-                    if btn_salvar_conv:
-                        cod_p_conv = df_prods_conv.loc[df_prods_conv['descricao'] == p_sel_conv, 'codigo'].values[0]
-                        conn = get_db_connection()
-                        try:
-                            cursor = conn.cursor()
-                            cursor.execute("INSERT INTO conversoes_unidades (codigo_produto, unidade_origem, unidade_destino, fator_conversao) VALUES (?, ?, ?, ?)",
-                                           (cod_p_conv, un_origem.strip(), un_destino.strip(), fator))
-                            conn.commit()
-                            st.success("Regra de conversão cadastrada com sucesso!")
-                        finally:
-                            conn.close()
-                
-                st.markdown("---")
-                st.markdown("#### 📋 Regras de Conversão Cadastradas")
-                conn = get_db_connection()
-                df_regras = pd.read_sql("""
-                    SELECT c.id_conversao, p.descricao, c.unidade_origem, c.unidade_destino, c.fator_conversao
-                    FROM conversoes_unidades c
-                    JOIN produtos p ON c.codigo_produto = p.codigo
-                """, conn)
-                conn.close()
-                if not df_regras.empty:
-                    st.dataframe(df_regras, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Nenhuma regra cadastrada.")
-            else:
-                st.info("Cadastre produtos mestre primeiro para definir conversões.")
-
-        with tab_editar_prod:
-            st.markdown("### 🛠️ Consulta e Edição de Produtos")
-            conn = get_db_connection()
-            df_mestre = pd.read_sql("SELECT * FROM produtos", conn)
-            conn.close()
-            
-            if not df_mestre.empty:
-                st.dataframe(df_mestre, use_container_width=True, hide_index=True)
-                prod_para_editar = st.selectbox("Selecione para alterar", df_mestre['descricao'].tolist())
-                item_atual = df_mestre[df_mestre['descricao'] == prod_para_editar].iloc[0]
-                
+            df_m = pd.read_sql("SELECT * FROM produtos", conn)
+            if not df_m.empty:
+                pd_sel = st.selectbox("Consultar Master Data", df_m['descricao'].tolist())
+                ia = df_m[df_m['descricao'] == pd_sel].iloc[0]
                 with st.form("form_edicao_produto", clear_on_submit=True):
-                    e_cod = st.text_input("Código", value=str(item_atual['codigo']))
-                    e_barras = st.text_input("Código de Barras", value=str(item_atual['codigo_barras']) if pd.notna(item_atual['codigo_barras']) else "")
-                    e_forn = st.text_input("Código do Fornecedor", value=str(item_atual['codigo_fornecedor']) if pd.notna(item_atual['codigo_fornecedor']) else "")
-                    e_desc = st.text_input("Descrição", value=str(item_atual['descricao']))
-                    e_cat = st.text_input("Categoria", value=str(item_atual['categoria']))
-                    e_un = st.text_input("Unidade", value=str(item_atual['unidade']))
-                    e_min = st.number_input("Estoque Mínimo", min_value=0.0, value=float(item_atual['estoque_minimo']), step=1.0)
-                    e_custo = st.number_input("Custo (R$)", min_value=0.0, value=float(item_atual['custo']), step=0.01)
-                    
-                    btn_salvar_edicao = st.form_submit_button("Salvar Alterações", use_container_width=True)
-                    if btn_salvar_edicao:
-                        conn = get_db_connection()
-                        try:
-                            cursor = conn.cursor()
-                            cursor.execute("""UPDATE produtos SET codigo = ?, codigo_barras = ?, codigo_fornecedor = ?, descricao = ?, categoria = ?, unidade = ?, custo = ?, estoque_minimo = ? WHERE codigo = ?""",
-                                           (e_cod.strip(), e_barras.strip(), e_forn.strip(), e_desc.strip(), e_cat.strip(), e_un.strip(), e_custo, e_min, item_atual['codigo']))
-                            conn.commit()
-                            st.success("Atualizado com sucesso!")
-                            st.rerun()
-                        finally:
-                            conn.close()
-            else:
-                st.info("Nenhum produto cadastrado.")
-                        
-        with tab_excel:
-            st.markdown("### 📊 Importação / Exportação Excel")
-            conn = get_db_connection()
-            df_export = pd.read_sql("SELECT * FROM produtos", conn)
-            conn.close()
-            
-            if not df_export.empty:
-                buffer_excel = io.BytesIO()
-                with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-                    df_export.to_excel(writer, index=False, sheet_name='Produtos')
-                buffer_excel.seek(0)
-                st.download_button("📥 Baixar Planilha Excel de Produtos", data=buffer_excel, file_name="produtos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-            
-            uploaded_excel = st.file_uploader("Importar Planilha (.xlsx)", type=["xlsx"])
-            if uploaded_excel is not None:
-                df_imp = pd.read_excel(uploaded_excel)
-                if st.button("Confirmar Importação em Massa", use_container_width=True):
-                    conn = get_db_connection()
-                    try:
-                        cursor = conn.cursor()
-                        for _, row in df_imp.iterrows():
-                            cursor.execute("INSERT OR REPLACE INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                           (str(row['codigo']), str(row.get('codigo_barras', '')), str(row.get('codigo_fornecedor', '')), str(row['descricao']), str(row['categoria']), str(row['unidade']), float(row['custo']), float(row.get('estoque_minimo', 5.0))))
+                    e_dsc = st.text_input("Desc.", value=str(ia['descricao']))
+                    e_und = st.text_input("UM", value=str(ia['unidade']))
+                    e_min = st.number_input("Mínimo", value=float(ia['estoque_minimo']))
+                    if st.form_submit_button("Sobrescrever Regras (Push)"):
+                        conn.execute("UPDATE produtos SET descricao=?, unidade=?, estoque_minimo=? WHERE codigo=?", (e_dsc, e_und, e_min, ia['codigo']))
                         conn.commit()
-                        st.success("Importado com sucesso!")
-                    finally:
-                        conn.close()
-
-        with tab_visao:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 🌐 Visão Global de Estoques")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_adm_vis"):
-                    st.rerun()
-
-            conn = get_db_connection()
-            df_l = pd.read_sql("SELECT * FROM lojas", conn)
+                        st.success("Regras injetadas na produção.")
             conn.close()
-            lista_lojas_filtro = df_l['nome_loja'].tolist() if not df_l.empty else []
-            lista_lojas_filtro.insert(0, "Todas as Lojas (Consolidado)")
-            loja_escolhida_admin = st.selectbox("Filtrar por Unidade", lista_lojas_filtro)
-            
+
+        elif menu_selecionado == "📊 Carga Lote Planilha":
+            st.markdown("### 📊 Engine de Dados Excel/CSV")
+            up = st.file_uploader("Upload Massivo (.xlsx)", type=["xlsx"])
+            if up:
+                if st.button("Executar Batch Processing"):
+                    df = pd.read_excel(up)
+                    conn = get_db_connection()
+                    for _, r in df.iterrows():
+                        conn.execute("INSERT OR REPLACE INTO produtos (codigo, descricao, unidade, estoque_minimo) VALUES (?, ?, ?, ?)", (str(r['codigo']), str(r['descricao']), str(r['unidade']), float(r.get('estoque_minimo', 5))))
+                    conn.commit(); conn.close()
+                    st.success("Batch finalizado.")
+
+        elif menu_selecionado == "🌐 Visão Analítica Consolidada":
+            st.markdown("### 🌐 Power Data - Visão de Redes")
             conn = get_db_connection()
-            if loja_escolhida_admin == "Todas as Lojas (Consolidado)":
-                df_geral = pd.read_sql("""
-                    SELECT e.loja, p.codigo, p.codigo_barras, p.codigo_fornecedor, p.descricao, p.categoria, SUM(e.quantidade) as quantidade, p.unidade, p.estoque_minimo, p.custo, e.validade
-                    FROM estoque_lotes e
-                    JOIN produtos p ON e.codigo = p.codigo
-                    GROUP BY e.loja, p.codigo, e.validade
-                    HAVING quantidade != 0
-                """, conn)
-            else:
-                df_geral = pd.read_sql(f"""
-                    SELECT e.loja, p.codigo, p.codigo_barras, p.codigo_fornecedor, p.descricao, p.categoria, SUM(e.quantidade) as quantidade, p.unidade, p.estoque_minimo, p.custo, e.validade
-                    FROM estoque_lotes e
-                    JOIN produtos p ON e.codigo = p.codigo
-                    WHERE e.loja = '{loja_escolhida_admin}'
-                    GROUP BY p.codigo, e.validade
-                    HAVING quantidade != 0
-                """, conn)
-            conn.close()
+            l_todas = ["Consolidado Global"] + [x[0] for x in conn.execute("SELECT nome_loja FROM lojas").fetchall()]
+            lja = st.selectbox("Filtro de Datalake", l_todas)
             
-            if not df_geral.empty:
-                st.dataframe(formatar_dataframe_datas(df_geral), use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhum estoque registrado.")
+            q = "SELECT e.loja, p.codigo, p.descricao, SUM(e.quantidade) as qtd, p.unidade, e.validade FROM estoque_lotes e JOIN produtos p ON e.codigo = p.codigo GROUP BY e.loja, p.codigo, e.validade HAVING qtd != 0"
+            if lja != "Consolidado Global": q = f"SELECT e.loja, p.codigo, p.descricao, SUM(e.quantidade) as qtd, p.unidade, e.validade FROM estoque_lotes e JOIN produtos p ON e.codigo = p.codigo WHERE e.loja = '{lja}' GROUP BY p.codigo, e.validade HAVING qtd != 0"
+            st.dataframe(formatar_dataframe_datas(pd.read_sql(q, conn)), use_container_width=True, hide_index=True)
+            conn.close()
 
-        with tab_logs:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 📜 Log Completo de Auditoria com Filtros Avançados")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_adm_log"):
-                    st.rerun()
-
+        elif menu_selecionado == "📜 Log de Auditoria":
+            st.markdown("### 📜 Tracer e Logs do Sistema (Compliance)")
             conn = get_db_connection()
-            df_logs_full = pd.read_sql("SELECT * FROM logs_sistema", conn)
-            
-            col_f1, col_f2, col_f3 = st.columns(3)
-            with col_f1:
-                tipos_disponiveis = ["Todos"] + df_logs_full['tipo_acao'].unique().tolist() if not df_logs_full.empty else ["Todos"]
-                filtro_tipo = st.selectbox("Filtrar por Tipo de Ação", tipos_disponiveis)
-            with col_f2:
-                lojas_disponiveis = ["Todas"] + df_logs_full['loja'].unique().tolist() if not df_logs_full.empty else ["Todas"]
-                filtro_loja = st.selectbox("Filtrar por Loja", lojas_disponiveis)
-            with col_f3:
-                usuarios_disponiveis = ["Todos"] + df_logs_full['usuario'].unique().tolist() if not df_logs_full.empty else ["Todos"]
-                filtro_usuario = st.selectbox("Filtrar por Login/Usuário", usuarios_disponiveis)
-
-            query_log = "SELECT * FROM logs_sistema WHERE 1=1"
-            params = []
-            if filtro_tipo != "Todos":
-                query_log += " AND tipo_acao = ?"
-                params.append(filtro_tipo)
-            if filtro_loja != "Todas":
-                query_log += " AND loja = ?"
-                params.append(filtro_loja)
-            if filtro_usuario != "Todos":
-                query_log += " AND usuario = ?"
-                params.append(filtro_usuario)
-            
-            query_log += " ORDER BY id_log DESC"
-            df_logs = pd.read_sql(query_log, conn, params=params)
+            st.dataframe(formatar_dataframe_datas(pd.read_sql("SELECT * FROM logs_sistema ORDER BY id_log DESC", conn)), use_container_width=True, hide_index=True)
             conn.close()
-            
-            if not df_logs.empty:
-                st.dataframe(formatar_dataframe_datas(df_logs), use_container_width=True, hide_index=True)
-                
-                st.markdown("---")
-                st.markdown("#### 🔍 Detalhes Ampliados do Log")
-                log_id = st.selectbox("Inspecionar ID do Log", df_logs['id_log'].tolist())
-                if log_id:
-                    row_l = df_logs[df_logs['id_log'] == log_id].iloc[0]
-                    st.info(f"**Data:** {formatar_data_br(row_l['data'])} | **Usuário:** {row_l['usuario']} | **Loja:** {row_l['loja']} | **Ação:** {row_l['tipo_acao']}")
-                    st.success(row_l['detalhes'])
-            else:
-                st.info("Nenhum log encontrado com os filtros selecionados.")
