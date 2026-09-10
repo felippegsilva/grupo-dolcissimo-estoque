@@ -66,8 +66,7 @@ def init_db():
                         loja TEXT)""")
     
     lojas_iniciais = [("Loja Centro",), ("Loja Shopping",), ("Curitiba",)]
-    for l in lojas_iniciais:
-        cursor.execute("INSERT OR IGNORE INTO lojas VALUES (?)", l)
+    cursor.executemany("INSERT OR IGNORE INTO lojas VALUES (?)", lojas_iniciais)
     
     usuarios_iniciais = [
         ("admin", "admin123", "Administrador", "Geral"),
@@ -78,8 +77,7 @@ def init_db():
         ("estoque_shopping", "123", "Estoquista", "Loja Shopping"),
         ("chefe_shopping", "123", "Estoquista Chefe", "Loja Shopping")
     ]
-    for u in usuarios_iniciais:
-        cursor.execute("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", u)
+    cursor.executemany("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", usuarios_iniciais)
     conn.commit()
 
     cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (
@@ -837,7 +835,6 @@ else:
                                     un_fisica = unidades_fisicas[i].strip() if unidades_fisicas[i].strip() else item['UnidadeXML']
                                     cod_forn = item["Código"]
                                     
-                                    # Verifica se o produto já existe pelo código de fornecedor
                                     cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
                                     prod_existente = cursor.fetchone()
                                     
@@ -850,11 +847,9 @@ else:
                                                           VALUES (?, '', ?, ?, 'Geral', ?, ?, 5.0)""",
                                                        (cod_sistema, cod_forn, item['Descrição'], un_fisica, item['Custo']))
                                     
-                                    # Insere no estoque da unidade atual
                                     cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
                                                    (cod_sistema, loja_atual, q_real, v_str))
                                 
-                                # Registra nota como importada para bloquear duplicidade
                                 cursor.execute("INSERT OR REPLACE INTO nfs_importadas (chave_nfe, data_importacao, loja) VALUES (?, ?, ?)",
                                                (chave_nfe, data_hora, loja_atual))
                                 
