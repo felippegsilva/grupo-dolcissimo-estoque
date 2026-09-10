@@ -54,8 +54,21 @@ def formatar_dataframe_datas(df):
             df_copia[col] = df_copia[col].apply(formatar_data_br)
     return df_copia
 
-# --- FUNÇÃO FIFO COM PERMISSÃO DE SALDO NEGATIVO POR VALIDADE ---
+# --- FUNÇÃO FIFO QUE GERA SALDO NEGATIVO REAL NO BANCO POR VALIDADE ---
 def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, validade_informada):
+    # Padroniza a data de validade informada para formato ISO (YYYY-MM-DD) se vier em formato brasileiro ou string
+    val_limpa = datetime.now().strftime("%Y-%m-%d")
+    if validade_informada:
+        val_str_aux = str(validade_informada).strip()
+        try:
+            if "/" in val_str_aux:
+                val_limpa = datetime.strptime(val_str_aux, "%d/%m/%Y").strftime("%Y-%m-%d")
+            else:
+                val_limpa = val_str_aux[:10]
+        except:
+            pass
+
+    # Busca lotes com saldo positivo para abater primeiro (FIFO)
     cursor.execute("""
         SELECT validade, SUM(quantidade) as qtd 
         FROM estoque_lotes 
@@ -67,6 +80,8 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
     lotes = cursor.fetchall()
     
     restante = qtd_a_descontar
+    
+    # Abate proporcional dos lotes existentes
     for val, qtd in lotes:
         if restante <= 0:
             break
@@ -75,18 +90,19 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
                        (codigo, loja, -desconto, val))
         restante -= desconto
     
+    # Se ainda sobrar quantidade a descontar (estoque insuficiente), lança o excedente NEGATIVO na validade especificada
     if restante > 0:
-        val_str = validade_informada if validade_informada else datetime.now().strftime("%Y-%m-%d")
         cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                       (codigo, loja, -restante, val_str))
+                       (codigo, loja, -restante, val_limpa))
     
+    # Limpa apenas lotes cujos saldos consolidados por validade ficaram exatamente zerados
     cursor.execute("""
         DELETE FROM estoque_lotes 
         WHERE codigo = ? AND loja = ? AND validade IN (
             SELECT validade FROM estoque_lotes 
             WHERE codigo = ? AND loja = ? 
             GROUP BY validade 
-            HAVING SUM(quantidade) <= 0
+            HAVING SUM(quantidade) = 0
         )
     """, (codigo, loja, codigo, loja))
 
@@ -781,7 +797,6 @@ else:
                                 val_str = row_lote['validade']
                                 qtd_disp = row_lote['qtd']
                                 val_br = formatar_data_br(val_str)
-                                # Mantém a trava de validação por lote disponível
                                 entradas_lotes[val_str] = st.number_input(f"Lote: {val_br} (Disp: {qtd_disp})", min_value=0.0, max_value=float(qtd_disp), value=0.0, step=1.0, key=f"conf_lote_{i}")
                         else:
                             st.info("ℹ️ Nenhum lote com saldo positivo encontrado. Informe a quantidade e validade abaixo.")
