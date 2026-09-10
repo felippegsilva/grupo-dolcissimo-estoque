@@ -325,7 +325,6 @@ else:
                     with col_b:
                         qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
                         
-                    # Exibição dinâmica do saldo atual do item selecionado
                     if prod_sel:
                         est_atual_item = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'estoque_atual'].values[0]
                         unid_med = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'unidade'].values[0]
@@ -1345,14 +1344,14 @@ else:
                 params.append(filtro_loja)
             if filtro_usuario != "Todos":
                 query_log += " AND usuario = ?"
-                params.append(filres_usuario := filtro_usuario)
+                params.append(filtro_usuario)
             
             query_log += " ORDER BY id_log DESC"
             df_logs = pd.read_sql(query_log, conn, params=params)
             conn.close()
             
             if not df_logs.empty:
-                st.dataframe(formatar_dataframe_datas(df_logs), use_container_width=True, hide_index['id_log'] if 'id_log' in df_logs.columns else True) if 'id_log' in df_logs.columns else st.dataframe(formatar_dataframe_datas(df_logs), use_container_width=True)
+                st.dataframe(formatar_dataframe_datas(df_logs), use_container_width=True, hide_index=True)
                 
                 st.markdown("---")
                 st.markdown("#### 🔍 Detalhes Ampliados do Log")
