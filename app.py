@@ -26,6 +26,31 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- FUNÇÃO DE FORMATAÇÃO DE DATA PARA BR (DD/MM/AAAA) ---
+def formatar_data_br(val):
+    if not val or pd.isna(val):
+        return ""
+    str_val = str(val).strip()
+    try:
+        if len(str_val) >= 19:  # YYYY-MM-DD HH:MM:SS
+            dt = datetime.strptime(str_val[:19], "%Y-%m-%d %H:%M:%S")
+            return dt.strftime("%d/%m/%Y %H:%M:%S")
+        elif len(str_val) == 10:  # YYYY-MM-DD
+            dt = datetime.strptime(str_val, "%Y-%m-%d")
+            return dt.strftime("%d/%m/%Y")
+    except:
+        pass
+    return str_val
+
+def formatar_dataframe_datas(df):
+    if df is None or df.empty:
+        return df
+    df_copia = df.copy()
+    for col in df_copia.columns:
+        if any(term in col.lower() for term in ['data', 'validade']):
+            df_copia[col] = df_copia[col].apply(formatar_data_br)
+    return df_copia
+
 # --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 def init_db():
     conn = sqlite3.connect('sistema_estoque.db')
@@ -41,7 +66,8 @@ def init_db():
                         loja TEXT)""")
     
     lojas_iniciais = [("Loja Centro",), ("Loja Shopping",), ("Curitiba",)]
-    cursor.executemany("INSERT OR IGNORE INTO lojas VALUES (?)", lojas_iniciais)
+    for l in lojas_iniciais:
+        cursor.execute("INSERT OR IGNORE INTO lojas VALUES (?)", l)
     
     usuarios_iniciais = [
         ("admin", "admin123", "Administrador", "Geral"),
@@ -52,7 +78,8 @@ def init_db():
         ("estoque_shopping", "123", "Estoquista", "Loja Shopping"),
         ("chefe_shopping", "123", "Estoquista Chefe", "Loja Shopping")
     ]
-    cursor.executemany("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", usuarios_iniciais)
+    for u in usuarios_iniciais:
+        cursor.execute("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", u)
     conn.commit()
 
     cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (
@@ -71,7 +98,6 @@ def init_db():
         except:
             pass
 
-    # Tabela de Conversão de Unidades (Ex: 1 Cx = X Fd, 1 Fd = Y un)
     cursor.execute("""CREATE TABLE IF NOT EXISTS conversoes_unidades (
                         id_conversao INTEGER PRIMARY KEY AUTOINCREMENT,
                         codigo_produto TEXT,
@@ -173,7 +199,7 @@ def gerar_pdf_conferencia(id_ped, lote, solicitante, produto, qtd_ped, qtd_env, 
     c.setFont("Helvetica", 11)
     c.drawString(50, height - 80, f"ID do Pedido: {id_ped} | Lote: {lote}")
     c.drawString(50, height - 100, f"Solicitante: {solicitante}")
-    c.drawString(50, height - 120, f"Data do Relatório: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    c.drawString(50, height - 120, f"Data do Relatório: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
     
     c.line(50, height - 135, width - 50, height - 135)
     
@@ -185,7 +211,7 @@ def gerar_pdf_conferencia(id_ped, lote, solicitante, produto, qtd_ped, qtd_env, 
     c.drawString(70, height - 220, f"• Quantidade Solicitada: {qtd_ped}")
     c.drawString(70, height - 240, f"• Quantidade Enviada pelo Estoque: {qtd_env}")
     c.drawString(70, height - 260, f"• Motivo da Divergência: {motivo if motivo else 'Nenhuma / Sem Divergência'}")
-    c.drawString(70, height - 280, f"• Validade Sugerida: {validade}")
+    c.drawString(70, height - 280, f"• Validade Sugerida: {formatar_data_br(validade)}")
     
     c.line(50, height - 330, width - 50, height - 330)
     c.setFont("Helvetica-Oblique", 9)
@@ -360,7 +386,7 @@ else:
                                             f"--------------------------------------------------%0A" \
                                             f"🏢 *Unidade:* {loja_atual}%0A" \
                                             f"📋 *Lote:* {lote_id}%0A" \
-                                            f"📅 *Data:* {data_hora}%0A" \
+                                            f"📅 *Data:* {formatar_data_br(data_hora)}%0A" \
                                             f"👤 *Solicitante:* {nome_resp}%0A" \
                                             f"📦 *Itens:*%0A{itens_str}%0A" \
                                             f"💬 *Obs:* {obs_lote if obs_lote else 'Nenhuma'}"
@@ -395,7 +421,7 @@ else:
             conn.close()
             
             if not df_geral_reqs.empty:
-                st.dataframe(df_geral_reqs, use_container_width=True, hide_index=True)
+                st.dataframe(formatar_dataframe_datas(df_geral_reqs), use_container_width=True, hide_index=True)
                 
                 st.markdown("---")
                 st.markdown("### ✅ Confirmar Entrega e Dar Baixa Definitiva no Estoque da Unidade")
@@ -532,7 +558,7 @@ else:
                 conn.close()
 
                 if not df_hist_inv.empty:
-                    st.dataframe(df_hist_inv, use_container_width=True, hide_index=True)
+                    st.dataframe(formatar_dataframe_datas(df_hist_inv), use_container_width=True, hide_index=True)
                     
                     inv_id_sel = st.selectbox("Selecione o ID do Inventário para Baixar o CSV", df_hist_inv['id_inventario'].tolist())
                     if inv_id_sel:
@@ -588,7 +614,7 @@ else:
             with col_ga1:
                 st.markdown("#### ⏳ Vencimento Próximo (7 dias)")
                 if not df_validades_loja.empty:
-                    st.dataframe(df_validades_loja, use_container_width=True, hide_index=True)
+                    st.dataframe(formatar_dataframe_datas(df_validades_loja), use_container_width=True, hide_index=True)
                 else:
                     st.success("Nenhum item próximo ao vencimento.")
             with col_ga2:
@@ -629,7 +655,7 @@ else:
             conn.close()
 
             if not df_reqs_estoque.empty:
-                st.dataframe(df_reqs_estoque, use_container_width=True, hide_index=True)
+                st.dataframe(formatar_dataframe_datas(df_reqs_estoque), use_container_width=True, hide_index=True)
                 
                 with st.form("form_conferencia_estoquista"):
                     id_conf = st.selectbox("Selecione o ID do Pedido", df_reqs_estoque['id_pedido'].tolist())
@@ -682,7 +708,7 @@ else:
                 conn.close()
 
                 if not df_historico.empty:
-                    st.dataframe(df_historico, use_container_width=True, hide_index=True)
+                    st.dataframe(formatar_dataframe_datas(df_historico), use_container_width=True, hide_index=True)
                     
                     id_hist_sel = st.selectbox("Selecione o ID para Baixar o PDF", df_historico['id_pedido'].tolist(), key="sel_hist_pdf")
                     if id_hist_sel:
@@ -734,14 +760,14 @@ else:
                 conn.close()
                 
                 if not df_lotes_prod.empty:
-                    st.dataframe(df_lotes_prod, use_container_width=True, hide_index=True)
+                    st.dataframe(formatar_dataframe_datas(df_lotes_prod), use_container_width=True, hide_index=True)
                 else:
                     st.info("Nenhum lote com saldo positivo para este item.")
             else:
                 st.info("Nenhum produto cadastrado.")
             
         with tab_xml:
-            st.markdown("### 📥 Importação de NF-e (Separação por Item & Unidade Física)")
+            st.markdown("### 📥 Importação de NF-e (Quantidade Fixa da Nota & Unidade Física Editável)")
             xml_file = st.file_uploader("Arquivo XML da Nota Fiscal", type=["xml"])
             
             if xml_file is not None:
@@ -777,18 +803,17 @@ else:
                             u_com_xml = prod.find('nfe:uCom', ns).text if prod.find('nfe:uCom', ns) is not None else "un"
                             itens_nf.append({"Código": c_prod, "Descrição": x_prod, "Qtd": q_com, "UnidadeXML": u_com_xml, "Custo": v_un})
                         
-                        st.markdown("#### Configurar Unidade Física, Validade e Conferir Cada Item:")
+                        st.markdown("#### Revise a Validade e Unidade Física de Cada Item da Nota:")
                         validades_digitadas = {}
-                        qtde_ajustadas = {}
                         unidades_fisicas = {}
                         
                         for i, item in enumerate(itens_nf):
                             st.markdown(f"**Item {i+1}: {item['Descrição']}** (Cód Fornecedor: {item['Código']})")
                             col_x1, col_x2, col_x3, col_x4 = st.columns(4)
                             with col_x1:
-                                qtde_ajustadas[i] = st.number_input(f"Qtd", value=float(item['Qtd']), key=f"q_{i}")
+                                st.markdown(f"**Qtd (Travada):** `{item['Qtd']}`")
                             with col_x2:
-                                unidades_fisicas[i] = st.selectbox(f"Unidade Física", ["un", "Cx", "Fd", "kg", "L", "pct", "dz"], index=0, key=f"un_{i}")
+                                unidades_fisicas[i] = st.text_input(f"Unidade Física (Editável)", value=item['UnidadeXML'], key=f"un_{i}")
                             with col_x3:
                                 validades_digitadas[i] = st.date_input(f"Validade", key=f"v_{i}", value=None)
                             with col_x4:
@@ -802,17 +827,15 @@ else:
                             
                             for i, item in enumerate(itens_nf):
                                 v_str = validades_digitadas[i].strftime("%Y-%m-%d") if validades_digitadas[i] else datetime.now().strftime("%Y-%m-%d")
-                                q_real = qtde_ajustadas[i]
-                                un_fisica = unidades_fisicas[i]
+                                q_real = item['Qtd']  # Quantidade travada diretamente da nota
+                                un_fisica = unidades_fisicas[i].strip() if unidades_fisicas[i].strip() else item['UnidadeXML']
                                 cod_forn = item["Código"]
                                 
-                                # Verifica se o item já existe pelo código do fornecedor
                                 cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
                                 prod_existente = cursor.fetchone()
                                 
                                 if prod_existente:
                                     cod_sistema = prod_existente[0]
-                                    # Atualiza unidade se necessário
                                     cursor.execute("UPDATE produtos SET unidade = ? WHERE codigo = ?", (un_fisica, cod_sistema))
                                 else:
                                     cod_sistema = gerar_proximo_codigo_produto()
@@ -820,7 +843,6 @@ else:
                                                       VALUES (?, '', ?, ?, 'Geral', ?, ?, 5.0)""",
                                                    (cod_sistema, cod_forn, item["Descrição"], un_fisica, item["Custo"]))
                                 
-                                # Adiciona o lote independentemente para cada item no estoque da unidade atual
                                 cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
                                                (cod_sistema, loja_atual, q_real, v_str))
                             
@@ -940,7 +962,7 @@ else:
 
             if not df_validades_ch.empty:
                 st.warning("⚠️ Os seguintes itens estão próximos da data de vencimento:")
-                st.dataframe(df_validades_ch, use_container_width=True, hide_index=True)
+                st.dataframe(formatar_dataframe_datas(df_validades_ch), use_container_width=True, hide_index=True)
             else:
                 st.success("Tudo em ordem! Nenhum item próximo ao vencimento nesta unidade.")
 
@@ -997,7 +1019,7 @@ else:
             with col_al2:
                 st.markdown("#### ⏳ Vencimento Próximo (7 dias)")
                 if not df_venc.empty:
-                    st.dataframe(df_venc, use_container_width=True, hide_index=True)
+                    st.dataframe(formatar_dataframe_datas(df_venc), use_container_width=True, hide_index=True)
                 else:
                     st.success("Nenhum vencimento próximo.")
         
@@ -1273,7 +1295,7 @@ else:
             conn.close()
             
             if not df_geral.empty:
-                st.dataframe(df_geral, use_container_width=True, hide_index=True)
+                st.dataframe(formatar_dataframe_datas(df_geral), use_container_width=True, hide_index=True)
             else:
                 st.info("Nenhum estoque registrado.")
 
@@ -1316,14 +1338,14 @@ else:
             conn.close()
             
             if not df_logs.empty:
-                st.dataframe(df_logs, use_container_width=True, hide_index=True)
+                st.dataframe(formatar_dataframe_datas(df_logs), use_container_width=True, hide_index=True)
                 
                 st.markdown("---")
                 st.markdown("#### 🔍 Detalhes Ampliados do Log")
                 log_id = st.selectbox("Inspecionar ID do Log", df_logs['id_log'].tolist())
                 if log_id:
                     row_l = df_logs[df_logs['id_log'] == log_id].iloc[0]
-                    st.info(f"**Data:** {row_l['data']} | **Usuário:** {row_l['usuario']} | **Loja:** {row_l['loja']} | **Ação:** {row_l['tipo_acao']}")
+                    st.info(f"**Data:** {formatar_data_br(row_l['data'])} | **Usuário:** {row_l['usuario']} | **Loja:** {row_l['loja']} | **Ação:** {row_l['tipo_acao']}")
                     st.success(row_l['detalhes'])
             else:
                 st.info("Nenhum log encontrado com os filtros selecionados.")
