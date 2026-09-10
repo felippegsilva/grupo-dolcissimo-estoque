@@ -71,6 +71,15 @@ def init_db():
         except:
             pass
 
+    # Tabela de Conversão de Unidades (Ex: 1 Cx = X Fd, 1 Fd = Y un)
+    cursor.execute("""CREATE TABLE IF NOT EXISTS conversoes_unidades (
+                        id_conversao INTEGER PRIMARY KEY AUTOINCREMENT,
+                        codigo_produto TEXT,
+                        unidade_origem TEXT,
+                        unidade_destino TEXT,
+                        fator_conversao REAL,
+                        FOREIGN KEY(codigo_produto) REFERENCES produtos(codigo))""")
+
     cursor.execute("""CREATE TABLE IF NOT EXISTS estoque_lotes (
                         id_lote INTEGER PRIMARY KEY AUTOINCREMENT,
                         codigo TEXT,
@@ -255,7 +264,7 @@ else:
             with col_t1:
                 st.markdown("### 🛒 Requisição de Materiais (Consumo Próprio)")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_g_ped"):
+                if st.button("🔄 Atualizar", key="ref_g_ped"):
                     st.rerun()
 
             conn = sqlite3.connect('sistema_estoque.db')
@@ -368,7 +377,7 @@ else:
             with col_t1:
                 st.markdown("### 🔄 Check-list & Baixa de Consumo/Venda")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_g_chk"):
+                if st.button("🔄 Atualizar", key="ref_g_chk"):
                     st.rerun()
             
             conn = sqlite3.connect('sistema_estoque.db')
@@ -429,7 +438,6 @@ else:
                                 cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", 
                                                (qtd_entregue, responsavel_baixa.strip(), id_ped_sel))
                                 
-                                # SUBTRAI DO ESTOQUE DA PRÓPRIA LOJA (O item foi consumido/saiu para sistema de vendas)
                                 cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)", 
                                                (cod_p, loja_atual, -qtd_entregue, datetime.now().strftime("%Y-%m-%d")))
                                     
@@ -451,7 +459,7 @@ else:
             with col_t1:
                 st.markdown("### 📊 Inventário Físico & Histórico")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_g_inv"):
+                if st.button("🔄 Atualizar", key="ref_g_inv"):
                     st.rerun()
 
             sub_inv1, sub_inv2 = st.tabs(["Realizar Nova Contagem", "Histórico de Inventários Salvos"])
@@ -552,7 +560,7 @@ else:
             with col_t1:
                 st.markdown("### 🚨 Painel de Alertas de Validade (Próximos 7 Dias) & Estoque Mínimo")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_g_al"):
+                if st.button("🔄 Atualizar", key="ref_g_al"):
                     st.rerun()
 
             conn = sqlite3.connect('sistema_estoque.db')
@@ -608,7 +616,7 @@ else:
             with col_t1:
                 st.markdown("### 📋 Avaliação de Pedidos Internos")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_e_conf"):
+                if st.button("🔄 Atualizar", key="ref_e_conf"):
                     st.rerun()
 
             conn = sqlite3.connect('sistema_estoque.db')
@@ -701,7 +709,7 @@ else:
             with col_t1:
                 st.markdown("### 📦 Saldo Atual da Unidade")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_e_est"):
+                if st.button("🔄 Atualizar", key="ref_e_est"):
                     st.rerun()
 
             conn = sqlite3.connect('sistema_estoque.db')
@@ -733,7 +741,7 @@ else:
                 st.info("Nenhum produto cadastrado.")
             
         with tab_xml:
-            st.markdown("### 📥 Importação de NF-e (Adiciona Entrada na Unidade Atual)")
+            st.markdown("### 📥 Importação de NF-e (Separação por Item & Unidade Física)")
             xml_file = st.file_uploader("Arquivo XML da Nota Fiscal", type=["xml"])
             
             if xml_file is not None:
@@ -766,21 +774,24 @@ else:
                             x_prod = prod.find('nfe:xProd', ns).text
                             q_com = float(prod.find('nfe:qCom', ns).text)
                             v_un = float(prod.find('nfe:vUnCom', ns).text)
-                            u_com = prod.find('nfe:uCom', ns).text if prod.find('nfe:uCom', ns) is not None else "un"
-                            itens_nf.append({"Código": c_prod, "Descrição": x_prod, "Qtd": q_com, "Unidade": u_com, "Custo": v_un})
+                            u_com_xml = prod.find('nfe:uCom', ns).text if prod.find('nfe:uCom', ns) is not None else "un"
+                            itens_nf.append({"Código": c_prod, "Descrição": x_prod, "Qtd": q_com, "UnidadeXML": u_com_xml, "Custo": v_un})
                         
-                        st.markdown("#### Configurar Validade e Conferir Cada Item da Nota:")
+                        st.markdown("#### Configurar Unidade Física, Validade e Conferir Cada Item:")
                         validades_digitadas = {}
                         qtde_ajustadas = {}
+                        unidades_fisicas = {}
                         
                         for i, item in enumerate(itens_nf):
                             st.markdown(f"**Item {i+1}: {item['Descrição']}** (Cód Fornecedor: {item['Código']})")
-                            col_x1, col_x2, col_x3 = st.columns(3)
+                            col_x1, col_x2, col_x3, col_x4 = st.columns(4)
                             with col_x1:
-                                qtde_ajustadas[i] = st.number_input(f"Qtd ({item['Unidade']})", value=float(item['Qtd']), key=f"q_{i}")
+                                qtde_ajustadas[i] = st.number_input(f"Qtd", value=float(item['Qtd']), key=f"q_{i}")
                             with col_x2:
-                                validades_digitadas[i] = st.date_input(f"Validade", key=f"v_{i}", value=None)
+                                unidades_fisicas[i] = st.selectbox(f"Unidade Física", ["un", "Cx", "Fd", "kg", "L", "pct", "dz"], index=0, key=f"un_{i}")
                             with col_x3:
+                                validades_digitadas[i] = st.date_input(f"Validade", key=f"v_{i}", value=None)
+                            with col_x4:
                                 st.write(f"Custo Unit: R$ {item['Custo']:.2f}")
                             st.markdown("---")
                         
@@ -792,20 +803,24 @@ else:
                             for i, item in enumerate(itens_nf):
                                 v_str = validades_digitadas[i].strftime("%Y-%m-%d") if validades_digitadas[i] else datetime.now().strftime("%Y-%m-%d")
                                 q_real = qtde_ajustadas[i]
+                                un_fisica = unidades_fisicas[i]
                                 cod_forn = item["Código"]
                                 
+                                # Verifica se o item já existe pelo código do fornecedor
                                 cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
                                 prod_existente = cursor.fetchone()
                                 
                                 if prod_existente:
                                     cod_sistema = prod_existente[0]
+                                    # Atualiza unidade se necessário
+                                    cursor.execute("UPDATE produtos SET unidade = ? WHERE codigo = ?", (un_fisica, cod_sistema))
                                 else:
                                     cod_sistema = gerar_proximo_codigo_produto()
-                                    cursor.execute("""INSERT OR IGNORE INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) 
+                                    cursor.execute("""INSERT INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) 
                                                       VALUES (?, '', ?, ?, 'Geral', ?, ?, 5.0)""",
-                                                   (cod_sistema, cod_forn, item["Descrição"], item["Unidade"], item["Custo"]))
+                                                   (cod_sistema, cod_forn, item["Descrição"], un_fisica, item["Custo"]))
                                 
-                                # ADICIONA NO ESTOQUE DA UNIDADE ATUAL
+                                # Adiciona o lote independentemente para cada item no estoque da unidade atual
                                 cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
                                                (cod_sistema, loja_atual, q_real, v_str))
                             
@@ -813,10 +828,10 @@ else:
                                            (chave_nfe, data_hora, loja_atual))
                             
                             cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                           (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_XML", f"Entrada NF-e chave {chave_nfe} em {loja_atual}."))
+                                           (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_XML", f"Entrada NF-e chave {chave_nfe} em {loja_atual} com {len(itens_nf)} itens."))
                             conn.commit()
                             conn.close()
-                            st.success("Estoque atualizado com sucesso via XML na unidade atual!")
+                            st.success("Todos os itens da Nota Fiscal foram cadastrados e deram entrada no estoque da unidade com sucesso!")
                 except Exception as e:
                     st.error(f"Erro ao processar o XML: {e}")
 
@@ -907,7 +922,7 @@ else:
             with col_t1:
                 st.markdown("### 🚨 Alertas & Vencimentos (Unidade)")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_e_al"):
+                if st.button("🔄 Atualizar", key="ref_e_al"):
                     st.rerun()
 
             conn = sqlite3.connect('sistema_estoque.db')
@@ -933,11 +948,12 @@ else:
     elif perfil_atual == "Administrador":
         st.markdown("### 👑 Painel Executivo Global")
         
-        tab_alertas, tab_lojas, tab_users, tab_prod, tab_editar_prod, tab_excel, tab_visao, tab_logs = st.tabs([
+        tab_alertas, tab_lojas, tab_users, tab_prod, tab_conv, tab_editar_prod, tab_excel, tab_visao, tab_logs = st.tabs([
             "🚨 Alertas Globais",
             "🏢 Lojas", 
             "👥 Usuários", 
             "✏️ Cadastro Mestre", 
+            "🔄 Conversão de Unidades",
             "🛠️ Editar Produtos",
             "📊 Excel",
             "🌐 Visão Geral",
@@ -949,7 +965,7 @@ else:
             with col_t1:
                 st.markdown("### 🚨 Painel de Executivos: Estoques Críticos e Vencimentos")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_adm_al"):
+                if st.button("🔄 Atualizar", key="ref_adm_al"):
                     st.rerun()
 
             conn = sqlite3.connect('sistema_estoque.db')
@@ -1102,7 +1118,7 @@ else:
                     c_desc = st.text_input("Descrição do Item")
                     c_cat = st.text_input("Categoria")
                 with col_p3:
-                    c_un = st.text_input("Unidade (Ex: un, kg, L, Fd, Ds, Cx)")
+                    c_un = st.text_input("Unidade (Ex: un, Cx, Fd, kg, L)")
                     c_min = st.number_input("Estoque Mínimo", min_value=0.0, value=5.0, step=1.0)
                     c_custo = st.number_input("Custo (R$)", min_value=0.0)
                 
@@ -1115,6 +1131,53 @@ else:
                     conn.commit()
                     conn.close()
                     st.success("Produto cadastrado com sucesso!")
+
+        with tab_conv:
+            st.markdown("### 🔄 Cadastro de Equivalência e Fatores de Conversão")
+            st.markdown("*(Exemplo: 1 Caixa (Cx) equivale a 12 Fardos (Fd) ou 1 Fardo (Fd) equivale a 24 Unidades (un).)*")
+            
+            conn = sqlite3.connect('sistema_estoque.db')
+            df_prods_conv = pd.read_sql("SELECT codigo, descricao FROM produtos", conn)
+            conn.close()
+            
+            if not df_prods_conv.empty:
+                with st.form("form_cad_conversao"):
+                    p_sel_conv = st.selectbox("Selecione o Produto", df_prods_conv['descricao'].tolist())
+                    
+                    col_cv1, col_cv2, col_cv3 = st.columns(3)
+                    with col_cv1:
+                        un_origem = st.text_input("Unidade Origem (Ex: Cx)", value="Cx")
+                    with col_cv2:
+                        un_destino = st.text_input("Unidade Destino (Ex: Fd)", value="Fd")
+                    with col_cv3:
+                        fator = st.number_input("Fator de Equivalência (Quantos Destino cabem na Origem)", min_value=0.001, value=1.0, step=1.0)
+                    
+                    btn_salvar_conv = st.form_submit_button("Salvar Regra de Conversão", use_container_width=True)
+                    if btn_salvar_conv:
+                        cod_p_conv = df_prods_conv.loc[df_prods_conv['descricao'] == p_sel_conv, 'codigo'].values[0]
+                        conn = sqlite3.connect('sistema_estoque.db')
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT INTO conversoes_unidades (codigo_produto, unidade_origem, unidade_destino, fator_conversao) VALUES (?, ?, ?, ?)",
+                                       (cod_p_conv, un_origem.strip(), un_destino.strip(), fator))
+                        conn.commit()
+                        conn.close()
+                        st.success("Regra de conversão cadastrada com sucesso!")
+                
+                st.markdown("---")
+                st.markdown("#### 📋 Regras de Conversão Cadastradas")
+                conn = sqlite3.connect('sistema_estoque.db')
+                df_regras = pd.read_sql("""
+                    SELECT c.id_conversao, p.descricao, c.unidade_origem, c.unidade_destino, c.fator_conversao
+                    FROM conversoes_unidades c
+                    JOIN produtos p ON c.codigo_produto = p.codigo
+                """, conn)
+                conn.close()
+                if not df_regras.empty:
+                    st.dataframe(df_regras, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Nenhuma regra cadastrada.")
+            else:
+                st.info("Cadastre produtos mestre primeiro para definir conversões.")
 
         with tab_editar_prod:
             st.markdown("### 🛠️ Consulta e Edição de Produtos")
@@ -1181,7 +1244,7 @@ else:
             with col_t1:
                 st.markdown("### 🌐 Visão Global de Estoques")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_adm_vis"):
+                if st.button("🔄 Atualizar", key="ref_adm_vis"):
                     st.rerun()
 
             conn = sqlite3.connect('sistema_estoque.db')
@@ -1219,7 +1282,7 @@ else:
             with col_t1:
                 st.markdown("### 📜 Log Completo de Auditoria com Filtros Avançados")
             with col_t2:
-                if st.button("🔄 Atualizar Dados", key="ref_adm_log"):
+                if st.button("🔄 Atualizar", key="ref_adm_log"):
                     st.rerun()
 
             conn = sqlite3.connect('sistema_estoque.db')
