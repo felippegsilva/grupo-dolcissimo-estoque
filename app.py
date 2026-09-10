@@ -101,6 +101,14 @@ def init_db():
         except:
             pass
 
+    # Tabela para salvar histórico de inventários realizados
+    cursor.execute("""CREATE TABLE IF NOT EXISTS inventarios_salvos (
+                        id_inventario INTEGER PRIMARY KEY AUTOINCREMENT,
+                        data TEXT,
+                        loja TEXT,
+                        responsavel TEXT,
+                        dados_csv TEXT)""")
+
     cursor.execute("""CREATE TABLE IF NOT EXISTS logs_sistema (
                         id_log INTEGER PRIMARY KEY AUTOINCREMENT,
                         data TEXT,
@@ -171,7 +179,7 @@ else:
         tab_ped, tab_check, tab_inv, tab_alertas = st.tabs([
             "📝 Carrinho de Requisição", 
             "✔️ Check-list Consolidado & Baixa", 
-            "📋 Inventário da Loja",
+            "📋 Inventário & Histórico",
             "🚨 Alertas & Vencimentos"
         ])
         
@@ -372,35 +380,39 @@ else:
                 st.info("Nenhuma requisição registrada.")
 
         with tab_inv:
-            st.markdown("### 📊 Inventário Físico da Loja (Com Contagem Controlada)")
-            conn = sqlite3.connect('sistema_estoque.db')
-            df_produtos_inv = pd.read_sql("SELECT codigo, descricao FROM produtos", conn)
-            df_estoque_atual = pd.read_sql(f"SELECT codigo, SUM(quantidade) as qtd FROM estoque_lotes WHERE loja = '{loja_atual}' GROUP BY codigo", conn)
-            conn.close()
+            st.markdown("### 📊 Inventário Físico & Histórico")
+            sub_inv1, sub_inv2 = st.tabs(["Realizar Nova Contagem", "Histórico de Inventários Salvos"])
+            
+            with sub_inv1:
+                st.markdown("#### Nova Contagem de Estoque")
+                conn = sqlite3.connect('sistema_estoque.db')
+                df_produtos_inv = pd.read_sql("SELECT codigo, descricao FROM produtos", conn)
+                df_estoque_atual = pd.read_sql(f"SELECT codigo, SUM(quantidade) as qtd FROM estoque_lotes WHERE loja = '{loja_atual}' GROUP BY codigo", conn)
+                conn.close()
 
-            df_inv_full = pd.merge(df_produtos_inv, df_estoque_atual, on="codigo", how="left").fillna(0)
-            df_inv_full.columns = ["cód", "nome", "saldo_atual"]
+                df_inv_full = pd.merge(df_produtos_inv, df_estoque_atual, on="codigo", how="left").fillna(0)
+                df_inv_full.columns = ["cód", "nome", "saldo_atual"]
 
-            if not df_inv_full.empty:
-                st.write("Visualize o saldo atual para referência e insira a quantidade física contada. O arquivo gerado conterá exatamente **cód;nome;contagem**.")
-                
-                with st.form("form_inventario_gerente"):
-                    contagens_usuario = {}
+                if not df_inv_full.empty:
+                    # Usamos formulário apenas para coletar os inputs de contagem
+                    with st.form("form_inventario_gerente"):
+                        contagens_usuario = {}
+                        for idx, row in df_inv_full.iterrows():
+                            col_i1, col_i2, col_i3, col_i4 = st.columns([1, 2, 1, 1])
+                            with col_i1:
+                                st.text(row['cód'])
+                            with col_i2:
+                                st.text(row['nome'])
+                            with col_i3:
+                                st.text(f"Saldo: {row['saldo_atual']}")
+                            with col_i4:
+                                contagens_usuario[row['cód']] = st.number_input(f"Contagem {row['cód']}", min_value=0.0, value=float(row['saldo_atual']), step=1.0, key=f"inv_{row['cód']}", label_visibility="collapsed")
+                            st.markdown("---")
+
+                        btn_salvar_contagem = st.form_submit_button("💾 Salvar Contagem de Inventário", use_container_width=True)
                     
-                    for idx, row in df_inv_full.iterrows():
-                        col_i1, col_i2, col_i3, col_i4 = st.columns([1, 2, 1, 1])
-                        with col_i1:
-                            st.text(row['cód'])
-                        with col_i2:
-                            st.text(row['nome'])
-                        with col_i3:
-                            st.text(f"Saldo: {row['saldo_atual']}")
-                        with col_i4:
-                            contagens_usuario[row['cód']] = st.number_input(f"Contagem {row['cód']}", min_value=0.0, value=float(row['saldo_atual']), step=1.0, key=f"inv_{row['cód']}", label_visibility="collapsed")
-                        st.markdown("---")
-
-                    btn_finalizar_inv = st.form_submit_button("🏁 Finalizar Contagem de Inventário e Gerar CSV", use_container_width=True)
-                    if btn_finalizar_inv:
+                    # Botão e lógica fora do formulário para evitar erros de layout do Streamlit
+                    if btn_salvar_contagem:
                         dados_csv = []
                         for idx, row in df_inv_full.iterrows():
                             c_real = contagens_usuario[row['cód']]
@@ -411,18 +423,51 @@ else:
                             })
                         
                         df_resultado_inv = pd.DataFrame(dados_csv)
-                        csv_data = df_resultado_inv.to_csv(index=False, sep=';', encoding='utf-8-sig')
+                        csv_string = df_resultado_inv.to_csv(index=False, sep=';', encoding='utf-8-sig')
                         
-                        st.success("Inventário finalizado com sucesso!")
-                        st.download_button(
-                            label="📥 Clique Aqui para Baixar o Inventário em CSV (cód;nome;contagem)",
-                            data=csv_data,
-                            file_name=f"inventario_{loja_atual.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-            else:
-                st.info("Nenhum produto cadastrado.")
+                        data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        conn = sqlite3.connect('sistema_estoque.db')
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT INTO inventarios_salvos (data, loja, responsavel, dados_csv) VALUES (?, ?, ?, ?)",
+                                       (data_hora, loja_atual, st.session_state.usuario, csv_string))
+                        cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                       (data_hora, st.session_state.usuario, loja_atual, "INVENTARIO", f"Inventário físico salvo para a unidade {loja_atual}."))
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success("Contagem salva com sucesso! Acesse a aba 'Histórico de Inventários Salvos' para baixar o arquivo CSV.")
+                else:
+                    st.info("Nenhum produto cadastrado.")
+
+            with sub_inv2:
+                st.markdown("#### 📂 Histórico de Inventários Realizados")
+                conn = sqlite3.connect('sistema_estoque.db')
+                df_hist_inv = pd.read_sql(f"SELECT id_inventario, data, responsavel FROM inventarios_salvos WHERE loja = '{loja_atual}' ORDER BY id_inventario DESC", conn)
+                conn.close()
+
+                if not df_hist_inv.empty:
+                    st.dataframe(df_hist_inv, use_container_width=True, hide_index=True)
+                    
+                    inv_id_sel = st.selectbox("Selecione o ID do Inventário para Baixar o CSV", df_hist_inv['id_inventario'].tolist())
+                    if inv_id_sel:
+                        conn = sqlite3.connect('sistema_estoque.db')
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT dados_csv, data FROM inventarios_salvos WHERE id_inventario = ?", (inv_id_sel,))
+                        res_inv = cursor.fetchone()
+                        conn.close()
+                        
+                        if res_inv:
+                            csv_conteudo = res_inv[0]
+                            data_inv = res_inv[1].replace(':', '-').replace(' ', '_')
+                            st.download_button(
+                                label="📥 Baixar Arquivo CSV deste Inventário (cód;nome;contagem)",
+                                data=csv_conteudo,
+                                file_name=f"inventario_{loja_atual.lower().replace(' ', '_')}_{data_inv}.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                else:
+                    st.info("Nenhum inventário salvo no histórico desta unidade.")
 
         with tab_alertas:
             st.markdown("### 🚨 Painel de Alertas de Validade (Próximos 7 Dias) & Estoque Mínimo")
