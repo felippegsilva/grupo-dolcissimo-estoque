@@ -346,14 +346,15 @@ else:
                     hide_index=True
                 )
                 
+                # REQUISIÇÃO COM ATUALIZAÇÃO IMEDIATA DO SELECTBOX (on_change)
+                def atualizar_estoque_selecionado():
+                    pass
+
+                prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist(), key="select_prod_req", on_change=atualizar_estoque_selecionado)
+                
                 with st.form("form_add_carrinho"):
-                    col_a, col_b = st.columns([2, 1])
-                    with col_a:
-                        prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist(), key="select_prod_req")
-                    with col_b:
-                        qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
+                    qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
                     
-                    # Exibe o estoque atualizado em tempo real baseado no produto selecionado
                     if prod_sel:
                         est_atual_item = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'estoque_atual'].values[0]
                         unid_med = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'unidade'].values[0]
@@ -446,84 +447,104 @@ else:
                 if st.button("🔄 Atualizar", key="ref_g_chk"):
                     st.rerun()
             
-            conn = get_db_connection()
-            df_geral_reqs = pd.read_sql(f"""
-                SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.descricao, 
-                       r.qtd_pedida AS "Qtd Solicitada", 
-                       r.qtd_enviada_estoque AS "Qtd Separada", 
-                       r.validade_sugerida AS "Validade Informada",
-                       r.motivo_divergencia AS "Motivo Divergência", 
-                       r.status
-                FROM requisicoes_loja r
-                JOIN produtos p ON r.codigo_produto = p.codigo
-                WHERE r.loja = '{loja_atual}'
-                ORDER BY r.id_pedido DESC
-            """, conn)
-            conn.close()
-            
-            if not df_geral_reqs.empty:
-                st.dataframe(formatar_dataframe_datas(df_geral_reqs), use_container_width=True, hide_index=True)
-                
-                st.markdown("---")
-                st.markdown("### ✅ Confirmar Entrega e Dar Baixa Definitiva no Estoque da Unidade")
+            sub_chk1, sub_chk2 = st.tabs(["Realizar Confirmação (Pendente)", "📜 Histórico de Check-lists (Validação Concluída)"])
+
+            with sub_chk1:
                 conn = get_db_connection()
-                df_prontos = pd.read_sql(f"""
-                    SELECT r.id_pedido, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.validade_sugerida
+                df_geral_reqs = pd.read_sql(f"""
+                    SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.descricao, 
+                           r.qtd_pedida AS "Qtd Solicitada", 
+                           r.qtd_enviada_estoque AS "Qtd Separada", 
+                           r.validade_sugerida AS "Validade Informada",
+                           r.motivo_divergencia AS "Motivo Divergência", 
+                           r.status
                     FROM requisicoes_loja r
                     JOIN produtos p ON r.codigo_produto = p.codigo
-                    WHERE r.loja = '{loja_atual}' AND r.status = 'Pronto para Check-list'
+                    WHERE r.loja = '{loja_atual}'
+                    ORDER BY r.id_pedido DESC
                 """, conn)
                 conn.close()
                 
-                if not df_prontos.empty:
-                    with st.form("form_checklist_gerente"):
-                        id_ped_sel = st.selectbox("Selecione o ID do Item Separado", df_prontos['id_pedido'].tolist())
-                        item_info = df_prontos[df_prontos['id_pedido'] == id_ped_sel].iloc[0]
-                        
-                        st.info(f"📋 **Item:** {item_info['descricao']} | 📥 **Solicitado:** {item_info['qtd_pedida']} | 📦 **Separado:** {item_info['qtd_enviada_estoque']}")
-                        
-                        # Campo de Validade editável pelo Gerente para conferência
-                        validade_original_est = str(item_info['validade_sugerida'])
-                        validade_gerente_edit = st.text_input("Validade conferida (Editável)", value=validade_original_est)
+                if not df_geral_reqs.empty:
+                    st.dataframe(formatar_dataframe_datas(df_geral_reqs), use_container_width=True, hide_index=True)
+                    
+                    st.markdown("---")
+                    st.markdown("### ✅ Confirmar Entrega e Dar Baixa Definitiva no Estoque da Unidade")
+                    conn = get_db_connection()
+                    df_prontos = pd.read_sql(f"""
+                        SELECT r.id_pedido, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.validade_sugerida
+                        FROM requisicoes_loja r
+                        JOIN produtos p ON r.codigo_produto = p.codigo
+                        WHERE r.loja = '{loja_atual}' AND r.status = 'Pronto para Check-list'
+                    """, conn)
+                    conn.close()
+                    
+                    if not df_prontos.empty:
+                        with st.form("form_checklist_gerente"):
+                            id_ped_sel = st.selectbox("Selecione o ID do Item Separado", df_prontos['id_pedido'].tolist())
+                            item_info = df_prontos[df_prontos['id_pedido'] == id_ped_sel].iloc[0]
+                            
+                            st.info(f"📋 **Item:** {item_info['descricao']} | 📥 **Solicitado:** {item_info['qtd_pedida']} | 📦 **Separado:** {item_info['qtd_enviada_estoque']}")
+                            
+                            validade_original_est = str(item_info['validade_sugerida'])
+                            validade_gerente_edit = st.text_input("Validade conferida (Editável)", value=validade_original_est)
 
-                        col_c1, col_c2 = st.columns(2)
-                        with col_c1:
-                            qtd_entregue = st.number_input("Quantidade Entregue / Consumida", min_value=0.0, value=float(item_info['qtd_enviada_estoque']), step=1.0)
-                        with col_c2:
-                            responsavel_baixa = st.text_input("Seu Nome (Responsável)")
-                        
-                        btn_finalizar_chk = st.form_submit_button("✔️ Confirmar Entrega e Subtrair do Estoque", use_container_width=True)
-                        
-                        if btn_finalizar_chk:
-                            if not responsavel_baixa.strip():
-                                st.warning("Informe o seu nome.")
-                            else:
-                                data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                conn = get_db_connection()
-                                try:
-                                    cursor = conn.cursor()
-                                    cursor.execute("SELECT codigo_produto FROM requisicoes_loja WHERE id_pedido = ?", (id_ped_sel,))
-                                    res_item = cursor.fetchone()
-                                    cod_p = res_item[0]
+                            col_c1, col_c2 = st.columns(2)
+                            with col_c1:
+                                qtd_entregue = st.number_input("Quantidade Entregue / Consumida", min_value=0.0, value=float(item_info['qtd_enviada_estoque']), step=1.0)
+                            with col_c2:
+                                responsavel_baixa = st.text_input("Seu Nome (Responsável pela Validação)")
+                            
+                            btn_finalizar_chk = st.form_submit_button("✔️ Confirmar Entrega e Subtrair do Estoque", use_container_width=True)
+                            
+                            if btn_finalizar_chk:
+                                if not responsavel_baixa.strip():
+                                    st.warning("Informe o seu nome.")
+                                else:
+                                    data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    conn = get_db_connection()
+                                    try:
+                                        cursor = conn.cursor()
+                                        cursor.execute("SELECT codigo_produto FROM requisicoes_loja WHERE id_pedido = ?", (id_ped_sel,))
+                                        res_item = cursor.fetchone()
+                                        cod_p = res_item[0]
 
-                                    cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, validade_alterada_gerente = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", 
-                                                   (qtd_entregue, validade_gerente_edit.strip(), responsavel_baixa.strip(), id_ped_sel))
-                                    
-                                    # Desconta utilizando a regra FIFO em background (mais antigas primeiro)
-                                    descontar_estoque_fifo(cursor, cod_p, loja_atual, qtd_entregue)
+                                        cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, validade_alterada_gerente = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", 
+                                                       (qtd_entregue, validade_gerente_edit.strip(), responsavel_baixa.strip(), id_ped_sel))
                                         
-                                    detalhe_log = f"Check-list item #{id_ped_sel} Concluído | Baixa de {qtd_entregue} unidades do estoque de {loja_atual}. Validade conferida: {validade_gerente_edit}."
-                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                                   (data_hora, st.session_state.usuario, loja_atual, "BAIXA_CONSUMO", detalhe_log))
-                                    conn.commit()
-                                finally:
-                                    conn.close()
-                                st.success("Baixa realizada com sucesso no estoque da unidade!")
-                                st.rerun()
+                                        descontar_estoque_fifo(cursor, cod_p, loja_atual, qtd_entregue)
+                                            
+                                        detalhe_log = f"Check-list item #{id_ped_sel} Concluído por {responsavel_baixa.strip()} | Baixa de {qtd_entregue} unidades em {loja_atual}. Validade conferida: {validade_gerente_edit}."
+                                        cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                                       (data_hora, st.session_state.usuario, loja_atual, "BAIXA_CONSUMO", detalhe_log))
+                                        conn.commit()
+                                    finally:
+                                        conn.close()
+                                    st.success("Baixa realizada com sucesso no estoque da unidade!")
+                                    st.rerun()
+                    else:
+                        st.info("Nenhum item aguardando check-list.")
                 else:
-                    st.info("Nenhum item aguardando check-list.")
-            else:
-                st.info("Nenhuma requisição registrada.")
+                    st.info("Nenhuma requisição registrada.")
+
+            with sub_chk2:
+                st.markdown("#### 📜 Histórico de Check-lists Realizados (Validação de Usuário)")
+                conn = get_db_connection()
+                df_hist_chk = pd.read_sql(f"""
+                    SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.descricao, 
+                           r.qtd_pedida, r.qtd_entregue, r.validade_alterada_gerente AS "Validade Validada", 
+                           r.estoque_responsavel AS "Responsável Check-list"
+                    FROM requisicoes_loja r
+                    JOIN produtos p ON r.codigo_produto = p.codigo
+                    WHERE r.loja = '{loja_atual}' AND r.status = 'Concluído'
+                    ORDER BY r.id_pedido DESC
+                """, conn)
+                conn.close()
+
+                if not df_hist_chk.empty:
+                    st.dataframe(formatar_dataframe_datas(df_hist_chk), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Nenhum check-list concluído no histórico desta unidade.")
 
         with tab_inv:
             col_t1, col_t2 = st.columns([5, 1])
