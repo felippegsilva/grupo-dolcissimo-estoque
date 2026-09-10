@@ -54,7 +54,7 @@ def formatar_dataframe_datas(df):
             df_copia[col] = df_copia[col].apply(formatar_data_br)
     return df_copia
 
-# --- FUNÇÃO FIFO DE DESCONTO AUTOMÁTICO (Mais antigos primeiro) ---
+# --- FUNÇÃO FIFO DE DESCONTO AUTOMÁTICO & LIMPEZA DE LOTES ZERADOS ---
 def descontar_estoque_fifo(cursor, codigo, loja, qtd_a_descontar):
     cursor.execute("""
         SELECT validade, SUM(quantidade) as qtd 
@@ -78,6 +78,17 @@ def descontar_estoque_fifo(cursor, codigo, loja, qtd_a_descontar):
     if restante > 0:
         cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
                        (codigo, loja, -restante, datetime.now().strftime("%Y-%m-%d")))
+    
+    # Remove registros antigos cujos saldos consolidados por validade ficaram zerados ou negativos (limpeza do banco)
+    cursor.execute("""
+        DELETE FROM estoque_lotes 
+        WHERE codigo = ? AND loja = ? AND validade IN (
+            SELECT validade FROM estoque_lotes 
+            WHERE codigo = ? AND loja = ? 
+            GROUP BY validade 
+            HAVING SUM(quantidade) <= 0
+        )
+    """, (codigo, loja, codigo, loja))
 
 # --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 def init_db():
@@ -224,35 +235,58 @@ def gerar_proximo_codigo_produto(cursor_existente=None):
         
     return f"PROD-{proximo_num:03d}"
 
-# --- FUNÇÃO GERADORA DE PDF PARA CONFERÊNCIA ---
-def gerar_pdf_conferencia(id_ped, lote, solicitante, produto, qtd_ped, qtd_env, motivo, validade):
+# --- FUNÇÃO GERADORA DE PDF AGRUPADO POR LOTE ---
+def gerar_pdf_lote_conferencia(lote_id, loja):
+    conn = get_db_connection()
+    df_lote_itens = pd.read_sql(f"""
+        SELECT r.lote_id, r.data, r.solicitante, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.motivo_divergencia, r.validade_sugerida, r.validade_alterada_gerente
+        FROM requisicoes_loja r
+        JOIN produtos p ON r.codigo_produto = p.codigo
+        WHERE r.lote_id = '{lote_id}' AND r.loja = '{loja}'
+    """, conn)
+    conn.close()
+
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
     
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, height - 50, "GRUPO DOLCISSIMO - RELATÓRIO DE CONFERÊNCIA")
+    c.drawString(50, height - 50, "GRUPO DOLCISSIMO - RELATÓRIO DE LOTE DE SEPARAÇÃO")
     
-    c.setFont("Helvetica", 11)
-    c.drawString(50, height - 80, f"ID do Pedido: {id_ped} | Lote: {lote}")
-    c.drawString(50, height - 100, f"Solicitante: {solicitante}")
-    c.drawString(50, height - 120, f"Data do Relatório: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    if not df_lote_itens.empty:
+        solicitante = df_lote_itens.iloc[0]['solicitante']
+        data_lote = formatar_data_br(df_lote_itens.iloc[0]['data'])
+        
+        c.setFont("Helvetica", 11)
+        c.drawString(50, height - 80, f"Lote ID: {lote_id} | Solicitante: {solicitante}")
+        c.drawString(50, height - 100, f"Data da Solicitação: {data_lote} | Unidade: {loja}")
+        c.drawString(50, height - 120, f"Data de Emissão do Relatório: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        
+        c.line(50, height - 135, width - 50, height - 135)
+        
+        y = height - 165
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "Itens do Lote:")
+        y -= 25
+        
+        for idx, row in df_lote_itens.iterrows():
+            if y < 100:
+                c.showPage()
+                y = height - 50
+            
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(60, y, f"• Produto: {row['descricao']}")
+            y -= 15
+            c.setFont("Helvetica", 9)
+            c.drawString(80, y, f"Qtd Solicitada: {row['qtd_pedida']} | Qtd Enviada: {row['qtd_enviada_estoque']}")
+            y -= 15
+            val_usada = row['validade_alterada_gerente'] if row['validade_alterada_gerente'] else row['validade_sugerida']
+            c.drawString(80, y, f"Validade: {val_usada} | Divergência: {row['motivo_divergencia'] if row['motivo_divergencia'] else 'Nenhuma'}")
+            y -= 25
     
-    c.line(50, height - 135, width - 50, height - 135)
-    
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, height - 170, "Detalhes do Item:")
-    
-    c.setFont("Helvetica", 11)
-    c.drawString(70, height - 200, f"• Produto: {produto}")
-    c.drawString(70, height - 220, f"• Quantidade Solicitada: {qtd_ped}")
-    c.drawString(70, height - 240, f"• Quantidade Enviada pelo Estoque: {qtd_env}")
-    c.drawString(70, height - 260, f"• Motivo da Divergência: {motivo if motivo else 'Nenhuma / Sem Divergência'}")
-    c.drawString(70, height - 280, f"• Validades Separadas: {validade}")
-    
-    c.line(50, height - 330, width - 50, height - 330)
+    c.line(50, 60, width - 50, 60)
     c.setFont("Helvetica-Oblique", 9)
-    c.drawString(50, height - 350, "Documento gerado automaticamente pelo Sistema Corporativo de Estoque - Grupo Dolcissimo.")
+    c.drawString(50, 45, "Documento gerado automaticamente pelo Sistema Corporativo de Estoque - Grupo Dolcissimo.")
     
     c.save()
     buffer.seek(0)
@@ -654,7 +688,6 @@ else:
             conn = get_db_connection()
             limite_aviso = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
             
-            # Agregado por validade considerando apenas saldos positivos (> 0)
             df_validades_loja = pd.read_sql(f"""
                 SELECT l.codigo, p.descricao, SUM(l.quantidade) as total_qtd, l.validade
                 FROM estoque_lotes l
@@ -701,7 +734,7 @@ else:
             ])
 
         with tab_conf:
-            sub_c1, sub_c2 = st.tabs(["📦 Pedidos Pendentes (Separar)", "🖨️ Histórico de Separações & PDFs"])
+            sub_c1, sub_c2 = st.tabs(["📦 Pedidos Pendentes (Separar)", "🖨️ Histórico de Separações & PDFs por Lote"])
 
             with sub_c1:
                 col_t1, col_t2 = st.columns([5, 1])
@@ -803,38 +836,31 @@ else:
                     st.info("Nenhum pedido pendente no momento.")
 
             with sub_c2:
-                st.markdown("### 🖨️ Histórico de Separações & Download em PDF")
+                st.markdown("### 🖨️ Histórico de Lotes Finalizados & Download em PDF Consolidado")
                 conn = get_db_connection()
-                df_historico = pd.read_sql(f"""
-                    SELECT r.id_pedido, r.lote_id, r.solicitante, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.motivo_divergencia, r.validade_sugerida, r.validade_alterada_gerente, r.status
-                    FROM requisicoes_loja r
-                    JOIN produtos p ON r.codigo_produto = p.codigo
-                    WHERE r.loja = '{loja_atual}' AND r.status != 'Aguardando Conferência'
-                    ORDER BY r.id_pedido DESC
+                df_hist_lotes = pd.read_sql(f"""
+                    SELECT DISTINCT lote_id, data, solicitante, status
+                    FROM requisicoes_loja
+                    WHERE loja = '{loja_atual}' AND status != 'Aguardando Conferência'
+                    ORDER BY id_pedido DESC
                 """, conn)
                 conn.close()
 
-                if not df_historico.empty:
-                    st.dataframe(formatar_dataframe_datas(df_historico), use_container_width=True, hide_index=True)
+                if not df_hist_lotes.empty:
+                    st.dataframe(formatar_dataframe_datas(df_hist_lotes), use_container_width=True, hide_index=True)
                     
-                    id_hist_sel = st.selectbox("Selecione o ID para Baixar o PDF", df_historico['id_pedido'].tolist(), key="sel_hist_pdf_estoque")
-                    if id_hist_sel:
-                        row_h = df_historico[df_historico['id_pedido'] == id_hist_sel].iloc[0]
-                        val_relatorio = row_h['validade_alterada_gerente'] if row_h['validade_alterada_gerente'] else row_h['validade_sugerida']
-                        pdf_buffer = gerar_pdf_conferencia(
-                            row_h['id_pedido'], row_h['lote_id'], row_h['solicitante'], 
-                            row_h['descricao'], row_h['qtd_pedida'], 
-                            row_h['qtd_enviada_estoque'], row_h['motivo_divergencia'], val_relatorio
-                        )
+                    lote_sel_pdf = st.selectbox("Selecione o Lote ID para Baixar o PDF Consolidado", df_hist_lotes['lote_id'].tolist(), key="sel_hist_pdf_lote")
+                    if lote_sel_pdf:
+                        pdf_buffer = gerar_pdf_lote_conferencia(lote_sel_pdf, loja_atual)
                         st.download_button(
-                            label="📥 Baixar Relatório em PDF",
+                            label="📥 Baixar Relatório do Lote em PDF",
                             data=pdf_buffer,
-                            file_name=f"separacao_pedido_{id_hist_sel}.pdf",
+                            file_name=f"relatorio_lote_{lote_sel_pdf}.pdf",
                             mime="application/pdf",
                             use_container_width=True
                         )
                 else:
-                    st.info("Nenhuma separação finalizada no histórico ainda.")
+                    st.info("Nenhum lote finalizado no histórico ainda.")
 
         with tab_est:
             col_t1, col_t2 = st.columns([5, 1])
@@ -862,7 +888,7 @@ else:
                 cod_sel = df_estoque.loc[df_estoque['descricao'] == prod_detalhe, 'codigo'].values[0]
                 
                 conn = get_db_connection()
-                # Oculta lotes com saldo zerado ou negativo na exibição
+                # Exibe apenas lotes com saldo positivo > 0 e limpa saldos zerados
                 df_lotes_prod = pd.read_sql(f"""
                     SELECT validade as Validade, SUM(quantidade) as Quantidade
                     FROM estoque_lotes 
