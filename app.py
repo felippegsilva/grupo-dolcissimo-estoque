@@ -54,9 +54,8 @@ def formatar_dataframe_datas(df):
             df_copia[col] = df_copia[col].apply(formatar_data_br)
     return df_copia
 
-# --- FUNÇÃO FIFO QUE GERA SALDO NEGATIVO REAL NO BANCO POR VALIDADE ---
+# --- FUNÇÃO FIFO COM CORREÇÃO DA VALIDADE EXATA NO NEGATIVO ---
 def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, validade_informada):
-    # Padroniza a data de validade informada para formato ISO (YYYY-MM-DD) se vier em formato brasileiro ou string
     val_limpa = datetime.now().strftime("%Y-%m-%d")
     if validade_informada:
         val_str_aux = str(validade_informada).strip()
@@ -68,7 +67,6 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
         except:
             pass
 
-    # Busca lotes com saldo positivo para abater primeiro (FIFO)
     cursor.execute("""
         SELECT validade, SUM(quantidade) as qtd 
         FROM estoque_lotes 
@@ -81,7 +79,6 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
     
     restante = qtd_a_descontar
     
-    # Abate proporcional dos lotes existentes
     for val, qtd in lotes:
         if restante <= 0:
             break
@@ -90,12 +87,11 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
                        (codigo, loja, -desconto, val))
         restante -= desconto
     
-    # Se ainda sobrar quantidade a descontar (estoque insuficiente), lança o excedente NEGATIVO na validade especificada
+    # Se sobrar saldo a descontar, lança o excedente NEGATIVO exatamente na validade informada/escolhida
     if restante > 0:
         cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
                        (codigo, loja, -restante, val_limpa))
     
-    # Limpa apenas lotes cujos saldos consolidados por validade ficaram exatamente zerados
     cursor.execute("""
         DELETE FROM estoque_lotes 
         WHERE codigo = ? AND loja = ? AND validade IN (
@@ -398,7 +394,7 @@ else:
                 
                 prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist(), key="select_prod_req")
                 
-                with st.form("form_add_carrinho"):
+                with st.form("form_add_carrinho", clear_on_submit=True):
                     qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
                     
                     if prod_sel:
@@ -434,7 +430,7 @@ else:
                             st.session_state.carrinho_requisicao = [item for item in st.session_state.carrinho_requisicao if item['descricao'] != item_para_remover]
                             st.rerun()
 
-                    with st.form("form_finalizar_lote"):
+                    with st.form("form_finalizar_lote", clear_on_submit=True):
                         col_f1, col_f2 = st.columns(2)
                         with col_f1:
                             nome_resp = st.text_input("Seu Nome (Responsável)")
@@ -526,7 +522,7 @@ else:
                     conn.close()
                     
                     if not df_prontos.empty:
-                        with st.form("form_checklist_gerente"):
+                        with st.form("form_checklist_gerente", clear_on_submit=True):
                             id_ped_sel = st.selectbox("Selecione o ID do Item Separado", df_prontos['id_pedido'].tolist())
                             item_info = df_prontos[df_prontos['id_pedido'] == id_ped_sel].iloc[0]
                             
@@ -614,22 +610,20 @@ else:
                     df_produtos_inv = df_produtos_inv[df_produtos_inv['descricao'].str.contains(termo_busca, case=False, na=False) | df_produtos_inv['codigo'].str.contains(termo_busca, case=False, na=False)]
 
                 if not df_produtos_inv.empty:
-                    with st.form("form_inventario_gerente"):
-                        contagens_usuario = {}
-                        st.info("💡 Todos os itens iniciam com contagem 0.00 para digitação limpa.")
-                        for idx, row in df_produtos_inv.iterrows():
-                            col_i1, col_i2, col_i3 = st.columns([1, 3, 2])
-                            with col_i1:
-                                st.text(row['codigo'])
-                            with col_i2:
-                                st.text(row['descricao'])
-                            with col_i3:
-                                contagens_usuario[row['codigo']] = st.number_input(f"Contagem {row['codigo']}", min_value=0.0, value=0.0, step=1.0, key=f"inv_{row['codigo']}", label_visibility="collapsed")
-                            st.markdown("---")
+                    # Sem form global com enter para evitar disparos acidentais
+                    contagens_usuario = {}
+                    st.info("💡 Digite as contagens desejadas e clique explicitamente no botão ao final da página para salvar.")
+                    for idx, row in df_produtos_inv.iterrows():
+                        col_i1, col_i2, col_i3 = st.columns([1, 3, 2])
+                        with col_i1:
+                            st.text(row['codigo'])
+                        with col_i2:
+                            st.text(row['descricao'])
+                        with col_i3:
+                            contagens_usuario[row['codigo']] = st.number_input(f"Contagem {row['codigo']}", min_value=0.0, value=0.0, step=1.0, key=f"inv_{row['codigo']}", label_visibility="collapsed")
+                        st.markdown("---")
 
-                        btn_salvar_contagem = st.form_submit_button("💾 Salvar Contagem e Ajustar Estoque da Unidade", use_container_width=True)
-                    
-                    if btn_salvar_contagem:
+                    if st.button("💾 Salvar Contagem e Ajustar Estoque da Unidade", use_container_width=True):
                         dados_csv = []
                         data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
@@ -773,7 +767,7 @@ else:
                 if not df_reqs_estoque.empty:
                     st.dataframe(formatar_dataframe_datas(df_reqs_estoque), use_container_width=True, hide_index=True)
                     
-                    with st.form("form_conferencia_estoquista"):
+                    with st.form("form_conferencia_estoquista", clear_on_submit=True):
                         id_conf = st.selectbox("Selecione o ID do Pedido para Separar", df_reqs_estoque['id_pedido'].tolist())
                         item_req = df_reqs_estoque[df_reqs_estoque['id_pedido'] == id_conf].iloc[0]
                         
@@ -829,10 +823,7 @@ else:
 
                             if qtd_total_enviada == 0:
                                 st.warning("⚠️ Você precisa separar pelo menos uma unidade maior que zero!")
-                            elif qtd_outra > 0 and val_outra is None:
-                                pass
-                            
-                            if qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
+                            elif qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
                                 st.warning("⚠️ Como a quantidade separada é diferente da solicitada, o motivo de divergência é obrigatório!")
                             else:
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -965,7 +956,7 @@ else:
                         st.markdown(f"**NF-e Identificada:** `{chave_nfe}` | **Total de Itens:** `{len(itens_nf)}`")
                         st.markdown("---")
                         
-                        with st.form("form_confirma_xml"):
+                        with st.form("form_confirma_xml", clear_on_submit=True):
                             validades_digitadas = {}
                             unidades_fisicas = {}
                             
@@ -1034,7 +1025,7 @@ else:
             conn.close()
             
             if not df_prods_m.empty:
-                with st.form("form_entrada_manual"):
+                with st.form("form_entrada_manual", clear_on_submit=True):
                     prod_sel_m = st.selectbox("Selecione o Produto", df_prods_m['descricao'].tolist())
                     unid_reg = df_prods_m.loc[df_prods_m['descricao'] == prod_sel_m, 'unidade'].values[0]
                     
@@ -1081,7 +1072,7 @@ else:
                 conn.close()
                 
                 if not df_est_b.empty:
-                    with st.form("form_baixa_estoque"):
+                    with st.form("form_baixa_estoque", clear_on_submit=True):
                         prod_baixa = st.selectbox("Selecione o Produto", df_est_b['descricao'].tolist())
                         
                         col_b1, col_b2 = st.columns(2)
@@ -1201,7 +1192,7 @@ else:
             sub_l1, sub_l2, sub_l3 = st.tabs(["Cadastrar Nova Loja", "Alterar Nome de Loja", "Excluir Loja"])
             
             with sub_l1:
-                with st.form("form_nova_loja"):
+                with st.form("form_nova_loja", clear_on_submit=True):
                     nova_loja = st.text_input("Nome da Nova Loja")
                     cad_loja = st.form_submit_button("Cadastrar Loja", use_container_width=True)
                     if cad_loja and nova_loja.strip():
@@ -1222,7 +1213,7 @@ else:
                 df_lojas_alt = pd.read_sql("SELECT * FROM lojas", conn)
                 conn.close()
                 if not df_lojas_alt.empty:
-                    with st.form("form_alterar_loja"):
+                    with st.form("form_alterar_loja", clear_on_submit=True):
                         loja_antiga = st.selectbox("Selecione a Loja para Alterar", df_lojas_alt['nome_loja'].tolist())
                         novo_nome_loja = st.text_input("Novo Nome da Loja")
                         btn_alt_loja = st.form_submit_button("Salvar Alteração de Nome", use_container_width=True)
@@ -1249,7 +1240,7 @@ else:
                 df_lojas = pd.read_sql("SELECT * FROM lojas", conn)
                 conn.close()
                 if not df_lojas.empty:
-                    with st.form("form_excluir_loja"):
+                    with st.form("form_excluir_loja", clear_on_submit=True):
                         loja_para_excluir = st.selectbox("Selecione uma loja para excluir", df_lojas['nome_loja'].tolist())
                         btn_del_loja = st.form_submit_button("Excluir Loja Selecionada", use_container_width=True)
                         if btn_del_loja:
@@ -1280,7 +1271,7 @@ else:
             lista_lojas_cad = df_l['nome_loja'].tolist() if not df_l.empty else []
             lista_lojas_cad.insert(0, "Geral")
             
-            with st.form("form_novo_usuario"):
+            with st.form("form_novo_usuario", clear_on_submit=True):
                 col_u1, col_u2 = st.columns(2)
                 with col_u1:
                     u_nome = st.text_input("Usuário (Login)")
@@ -1309,7 +1300,7 @@ else:
 
         with tab_prod:
             st.markdown("### ✏️ Cadastro Mestre de Produtos")
-            with st.form("form_cad_produto"):
+            with st.form("form_cad_produto", clear_on_submit=True):
                 col_p1, col_p2, col_p3 = st.columns(3)
                 with col_p1:
                     c_cod = st.text_input("Código Principal")
@@ -1344,7 +1335,7 @@ else:
             conn.close()
             
             if not df_prods_conv.empty:
-                with st.form("form_cad_conversao"):
+                with st.form("form_cad_conversao", clear_on_submit=True):
                     p_sel_conv = st.selectbox("Selecione o Produto", df_prods_conv['descricao'].tolist())
                     
                     col_cv1, col_cv2, col_cv3 = st.columns(3)
@@ -1395,7 +1386,7 @@ else:
                 prod_para_editar = st.selectbox("Selecione para alterar", df_mestre['descricao'].tolist())
                 item_atual = df_mestre[df_mestre['descricao'] == prod_para_editar].iloc[0]
                 
-                with st.form("form_edicao_produto"):
+                with st.form("form_edicao_produto", clear_on_submit=True):
                     e_cod = st.text_input("Código", value=str(item_atual['codigo']))
                     e_barras = st.text_input("Código de Barras", value=str(item_atual['codigo_barras']) if pd.notna(item_atual['codigo_barras']) else "")
                     e_forn = st.text_input("Código do Fornecedor", value=str(item_atual['codigo_fornecedor']) if pd.notna(item_atual['codigo_fornecedor']) else "")
