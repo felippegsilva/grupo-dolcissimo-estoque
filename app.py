@@ -56,14 +56,6 @@ def formatar_dataframe_datas(df):
 
 # --- FUNÇÃO FIFO COM PERMISSÃO DE SALDO NEGATIVO POR VALIDADE ---
 def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, validade_informada):
-    # Busca lotes com saldo positivo para abater primeiro (FIFO)
-    cursor.execute("""
-        id_lote, validade, quantidade 
-        FROM estoque_lotes 
-        WHERE codigo = ? AND loja = ? AND quantidade > 0 
-        ORDER BY validade ASC
-    """, (codigo, loja))
-    # Correção da query para compatibilidade segura
     cursor.execute("""
         SELECT validade, SUM(quantidade) as qtd 
         FROM estoque_lotes 
@@ -75,8 +67,6 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
     lotes = cursor.fetchall()
     
     restante = qtd_a_descontar
-    
-    # Abate dos lotes existentes mais antigos
     for val, qtd in lotes:
         if restante <= 0:
             break
@@ -85,13 +75,11 @@ def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, v
                        (codigo, loja, -desconto, val))
         restante -= desconto
     
-    # Se ainda sobrar quantidade a descontar (estoque insuficiente), lança o restante negativo na validade informada/escolhida
     if restante > 0:
         val_str = validade_informada if validade_informada else datetime.now().strftime("%Y-%m-%d")
         cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
                        (codigo, loja, -restante, val_str))
     
-    # Limpeza de registros zerados consolidados por validade
     cursor.execute("""
         DELETE FROM estoque_lotes 
         WHERE codigo = ? AND loja = ? AND validade IN (
@@ -554,7 +542,6 @@ else:
                                         cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, validade_alterada_gerente = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", 
                                                        (qtd_entregue, validade_gerente_edit.strip(), responsavel_baixa.strip(), id_ped_sel))
                                         
-                                        # Executa a baixa permitindo saldo negativo na validade informada/editada
                                         data_val_baixa = validade_gerente_edit.strip() if validade_gerente_edit.strip() else datetime.now().strftime("%Y-%m-%d")
                                         descontar_estoque_fifo_com_negativo(cursor, cod_p, loja_atual, qtd_entregue, data_val_baixa)
                                             
@@ -794,9 +781,10 @@ else:
                                 val_str = row_lote['validade']
                                 qtd_disp = row_lote['qtd']
                                 val_br = formatar_data_br(val_str)
-                                entradas_lotes[val_str] = st.number_input(f"Lote: {val_br} (Disp: {qtd_disp})", min_value=0.0, value=0.0, step=1.0, key=f"conf_lote_{i}")
+                                # Mantém a trava de validação por lote disponível
+                                entradas_lotes[val_str] = st.number_input(f"Lote: {val_br} (Disp: {qtd_disp})", min_value=0.0, max_value=float(qtd_disp), value=0.0, step=1.0, key=f"conf_lote_{i}")
                         else:
-                            st.info("ℹ️ Nenhum lote com saldo positivo encontrado. Você pode informar a quantidade total e a validade abaixo (o saldo ficará negativo).")
+                            st.info("ℹ️ Nenhum lote com saldo positivo encontrado. Informe a quantidade e validade abaixo.")
 
                         st.markdown("---")
                         st.markdown("**Outra validade ou Quantidade Excedente (Permite Saldo Negativo):**")
@@ -827,7 +815,6 @@ else:
                             if qtd_total_enviada == 0:
                                 st.warning("⚠️ Você precisa separar pelo menos uma unidade maior que zero!")
                             elif qtd_outra > 0 and val_outra is None:
-                                # Se inseriu quantidade extra mas não colocou data, assume a data atual por segurança
                                 pass
                             
                             if qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
@@ -906,7 +893,6 @@ else:
                 cod_sel = df_estoque.loc[df_estoque['descricao'] == prod_detalhe, 'codigo'].values[0]
                 
                 conn = get_db_connection()
-                # Exibe saldos consolidados por validade (mostrando negativos caso existam e ocultando apenas os realmente zerados)
                 df_lotes_prod = pd.read_sql(f"""
                     SELECT validade as Validade, SUM(quantidade) as Quantidade
                     FROM estoque_lotes 
