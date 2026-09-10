@@ -346,11 +346,7 @@ else:
                     hide_index=True
                 )
                 
-                # REQUISIÇÃO COM ATUALIZAÇÃO IMEDIATA DO SELECTBOX (on_change)
-                def atualizar_estoque_selecionado():
-                    pass
-
-                prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist(), key="select_prod_req", on_change=atualizar_estoque_selecionado)
+                prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist(), key="select_prod_req")
                 
                 with st.form("form_add_carrinho"):
                     qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
@@ -658,13 +654,14 @@ else:
             conn = get_db_connection()
             limite_aviso = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
             
+            # Agregado por validade considerando apenas saldos positivos (> 0)
             df_validades_loja = pd.read_sql(f"""
                 SELECT l.codigo, p.descricao, SUM(l.quantidade) as total_qtd, l.validade
                 FROM estoque_lotes l
                 JOIN produtos p ON l.codigo = p.codigo
-                WHERE l.loja = '{loja_atual}' AND l.quantidade > 0
+                WHERE l.loja = '{loja_atual}'
                 GROUP BY l.codigo, l.validade
-                HAVING l.validade <= '{limite_aviso}'
+                HAVING total_qtd > 0 AND l.validade <= '{limite_aviso}'
             """, conn)
 
             df_abaixo_loja = pd.read_sql(f"""
@@ -704,103 +701,108 @@ else:
             ])
 
         with tab_conf:
-            col_t1, col_t2 = st.columns([5, 1])
-            with col_t1:
-                st.markdown("### 📋 Avaliação e Separação de Pedidos Internos")
-            with col_t2:
-                if st.button("🔄 Atualizar", key="ref_e_conf"):
-                    st.rerun()
+            sub_c1, sub_c2 = st.tabs(["📦 Pedidos Pendentes (Separar)", "🖨️ Histórico de Separações & PDFs"])
 
-            conn = get_db_connection()
-            df_reqs_estoque = pd.read_sql(f"""
-                SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.codigo, p.descricao, r.qtd_pedida, r.status
-                FROM requisicoes_loja r
-                JOIN produtos p ON r.codigo_produto = p.codigo
-                WHERE r.loja = '{loja_atual}' AND r.status = 'Aguardando Conferência'
-            """, conn)
-            conn.close()
+            with sub_c1:
+                col_t1, col_t2 = st.columns([5, 1])
+                with col_t1:
+                    st.markdown("### 📋 Avaliação e Separação de Pedidos Internos")
+                with col_t2:
+                    if st.button("🔄 Atualizar", key="ref_e_conf"):
+                        st.rerun()
 
-            if not df_reqs_estoque.empty:
-                st.dataframe(formatar_dataframe_datas(df_reqs_estoque), use_container_width=True, hide_index=True)
-                
-                with st.form("form_conferencia_estoquista"):
-                    id_conf = st.selectbox("Selecione o ID do Pedido para Separar", df_reqs_estoque['id_pedido'].tolist())
-                    item_req = df_reqs_estoque[df_reqs_estoque['id_pedido'] == id_conf].iloc[0]
+                conn = get_db_connection()
+                df_reqs_estoque = pd.read_sql(f"""
+                    SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.codigo, p.descricao, r.qtd_pedida, r.status
+                    FROM requisicoes_loja r
+                    JOIN produtos p ON r.codigo_produto = p.codigo
+                    WHERE r.loja = '{loja_atual}' AND r.status = 'Aguardando Conferência'
+                """, conn)
+                conn.close()
+
+                if not df_reqs_estoque.empty:
+                    st.dataframe(formatar_dataframe_datas(df_reqs_estoque), use_container_width=True, hide_index=True)
                     
-                    st.info(f"📋 **Item:** {item_req['descricao']} | 📥 **Solicitado:** {item_req['qtd_pedida']}")
-                    
-                    conn_lotes = get_db_connection()
-                    df_lotes_disp = pd.read_sql(f"""
-                        SELECT validade, SUM(quantidade) as qtd 
-                        FROM estoque_lotes 
-                        WHERE codigo = '{item_req['codigo']}' AND loja = '{loja_atual}' 
-                        GROUP BY validade 
-                        HAVING qtd > 0 
-                        ORDER BY validade ASC
-                    """, conn_lotes)
-                    conn_lotes.close()
-
-                    st.markdown("#### 📦 Selecione as quantidades a separar por Lote (Validade):")
-                    entradas_lotes = {}
-                    if not df_lotes_disp.empty:
-                        for i, row_lote in df_lotes_disp.iterrows():
-                            val_str = row_lote['validade']
-                            qtd_disp = row_lote['qtd']
-                            val_br = formatar_data_br(val_str)
-                            entradas_lotes[val_str] = st.number_input(f"Lote: {val_br} (Disp: {qtd_disp})", min_value=0.0, max_value=float(qtd_disp), value=0.0, step=1.0, key=f"conf_lote_{i}")
-                    else:
-                        st.warning("⚠️ O sistema não encontrou saldo positivo para este item nas validades.")
-
-                    st.markdown("---")
-                    st.markdown("**Outra validade (não listada acima):**")
-                    col_e1, col_e2 = st.columns(2)
-                    with col_e1:
-                        qtd_outra = st.number_input("Qtd de Outra Validade", min_value=0.0, value=0.0, step=1.0)
-                    with col_e2:
-                        val_outra = st.date_input("Data Extra", value=None, format="DD/MM/YYYY")
-
-                    motivo_div = st.text_input("Motivo de Divergência (Obrigatório se Total Separado ≠ Solicitado)")
-                    
-                    btn_salvar_conf = st.form_submit_button("📤 Confirmar Separação", use_container_width=True)
-                    
-                    if btn_salvar_conf:
-                        qtd_total_enviada = sum(entradas_lotes.values()) + qtd_outra
+                    with st.form("form_conferencia_estoquista"):
+                        id_conf = st.selectbox("Selecione o ID do Pedido para Separar", df_reqs_estoque['id_pedido'].tolist())
+                        item_req = df_reqs_estoque[df_reqs_estoque['id_pedido'] == id_conf].iloc[0]
                         
-                        partes_val = []
-                        for v_str, q in entradas_lotes.items():
-                            if q > 0:
-                                partes_val.append(f"{q}x ({formatar_data_br(v_str)})")
-                        if qtd_outra > 0 and val_outra:
-                            partes_val.append(f"{qtd_outra}x ({val_outra.strftime('%d/%m/%Y')})")
+                        st.info(f"📋 **Item:** {item_req['descricao']} | 📥 **Solicitado:** {item_req['qtd_pedida']}")
                         
-                        val_sug_final = " | ".join(partes_val)
+                        conn_lotes = get_db_connection()
+                        df_lotes_disp = pd.read_sql(f"""
+                            SELECT validade, SUM(quantidade) as qtd 
+                            FROM estoque_lotes 
+                            WHERE codigo = '{item_req['codigo']}' AND loja = '{loja_atual}' 
+                            GROUP BY validade 
+                            HAVING qtd > 0 
+                            ORDER BY validade ASC
+                        """, conn_lotes)
+                        conn_lotes.close()
 
-                        if qtd_total_enviada == 0:
-                            st.warning("⚠️ Você precisa separar pelo menos uma unidade maior que zero!")
-                        elif qtd_outra > 0 and val_outra is None:
-                            st.warning("⚠️ Preencha a Data Extra da quantidade inserida manualmente.")
-                        elif qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
-                            st.warning("⚠️ Como a quantidade separada é diferente da solicitada, o motivo de divergência é obrigatório!")
+                        st.markdown("#### 📦 Selecione as quantidades a separar por Lote (Validade):")
+                        entradas_lotes = {}
+                        if not df_lotes_disp.empty:
+                            for i, row_lote in df_lotes_disp.iterrows():
+                                val_str = row_lote['validade']
+                                qtd_disp = row_lote['qtd']
+                                val_br = formatar_data_br(val_str)
+                                entradas_lotes[val_str] = st.number_input(f"Lote: {val_br} (Disp: {qtd_disp})", min_value=0.0, max_value=float(qtd_disp), value=0.0, step=1.0, key=f"conf_lote_{i}")
                         else:
-                            data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            
-                            conn = get_db_connection()
-                            try:
-                                cursor = conn.cursor()
-                                cursor.execute("""UPDATE requisicoes_loja 
-                                                  SET qtd_enviada_estoque = ?, motivo_divergencia = ?, validade_sugerida = ?, status = 'Pronto para Check-list' 
-                                                  WHERE id_pedido = ?""",
-                                               (qtd_total_enviada, motivo_div.strip(), val_sug_final, id_conf))
-                                
-                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                               (data_hora, st.session_state.usuario, loja_atual, "SEPARACAO_PEDIDO", f"Separação item #{id_conf}: Qtd total={qtd_total_enviada}"))
-                                conn.commit()
-                            finally:
-                                conn.close()
-                            st.success("Separação confirmada com sucesso! O pedido foi liberado para o check-list final da unidade.")
-                            st.rerun()
+                            st.warning("⚠️ O sistema não encontrou saldo positivo para este item nas validades.")
 
-                st.markdown("---")
+                        st.markdown("---")
+                        st.markdown("**Outra validade (não listada acima):**")
+                        col_e1, col_e2 = st.columns(2)
+                        with col_e1:
+                            qtd_outra = st.number_input("Qtd de Outra Validade", min_value=0.0, value=0.0, step=1.0)
+                        with col_e2:
+                            val_outra = st.date_input("Data Extra", value=None, format="DD/MM/YYYY")
+
+                        motivo_div = st.text_input("Motivo de Divergência (Obrigatório se Total Separado ≠ Solicitado)")
+                        
+                        btn_salvar_conf = st.form_submit_button("📤 Confirmar Separação", use_container_width=True)
+                        
+                        if btn_salvar_conf:
+                            qtd_total_enviada = sum(entradas_lotes.values()) + qtd_outra
+                            
+                            partes_val = []
+                            for v_str, q in entradas_lotes.items():
+                                if q > 0:
+                                    partes_val.append(f"{q}x ({formatar_data_br(v_str)})")
+                            if qtd_outra > 0 and val_outra:
+                                partes_val.append(f"{qtd_outra}x ({val_outra.strftime('%d/%m/%Y')})")
+                            
+                            val_sug_final = " | ".join(partes_val)
+
+                            if qtd_total_enviada == 0:
+                                st.warning("⚠️ Você precisa separar pelo menos uma unidade maior que zero!")
+                            elif qtd_outra > 0 and val_outra is None:
+                                st.warning("⚠️ Preencha a Data Extra da quantidade inserida manualmente.")
+                            elif qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
+                                st.warning("⚠️ Como a quantidade separada é diferente da solicitada, o motivo de divergência é obrigatório!")
+                            else:
+                                data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                
+                                conn = get_db_connection()
+                                try:
+                                    cursor = conn.cursor()
+                                    cursor.execute("""UPDATE requisicoes_loja 
+                                                      SET qtd_enviada_estoque = ?, motivo_divergencia = ?, validade_sugerida = ?, status = 'Pronto para Check-list' 
+                                                      WHERE id_pedido = ?""",
+                                                   (qtd_total_enviada, motivo_div.strip(), val_sug_final, id_conf))
+                                    
+                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                                   (data_hora, st.session_state.usuario, loja_atual, "SEPARACAO_PEDIDO", f"Separação item #{id_conf}: Qtd total={qtd_total_enviada}"))
+                                    conn.commit()
+                                finally:
+                                    conn.close()
+                                st.success("Separação confirmada com sucesso! O pedido foi liberado para o check-list final da unidade.")
+                                st.rerun()
+                else:
+                    st.info("Nenhum pedido pendente no momento.")
+
+            with sub_c2:
                 st.markdown("### 🖨️ Histórico de Separações & Download em PDF")
                 conn = get_db_connection()
                 df_historico = pd.read_sql(f"""
@@ -815,7 +817,7 @@ else:
                 if not df_historico.empty:
                     st.dataframe(formatar_dataframe_datas(df_historico), use_container_width=True, hide_index=True)
                     
-                    id_hist_sel = st.selectbox("Selecione o ID para Baixar o PDF", df_historico['id_pedido'].tolist(), key="sel_hist_pdf")
+                    id_hist_sel = st.selectbox("Selecione o ID para Baixar o PDF", df_historico['id_pedido'].tolist(), key="sel_hist_pdf_estoque")
                     if id_hist_sel:
                         row_h = df_historico[df_historico['id_pedido'] == id_hist_sel].iloc[0]
                         val_relatorio = row_h['validade_alterada_gerente'] if row_h['validade_alterada_gerente'] else row_h['validade_sugerida']
@@ -833,8 +835,6 @@ else:
                         )
                 else:
                     st.info("Nenhuma separação finalizada no histórico ainda.")
-            else:
-                st.info("Nenhum pedido pendente no momento.")
 
         with tab_est:
             col_t1, col_t2 = st.columns([5, 1])
@@ -862,6 +862,7 @@ else:
                 cod_sel = df_estoque.loc[df_estoque['descricao'] == prod_detalhe, 'codigo'].values[0]
                 
                 conn = get_db_connection()
+                # Oculta lotes com saldo zerado ou negativo na exibição
                 df_lotes_prod = pd.read_sql(f"""
                     SELECT validade as Validade, SUM(quantidade) as Quantidade
                     FROM estoque_lotes 
@@ -1081,9 +1082,9 @@ else:
                 SELECT l.codigo, p.descricao, SUM(l.quantidade) as total_qtd, l.validade
                 FROM estoque_lotes l
                 JOIN produtos p ON l.codigo = p.codigo
-                WHERE l.loja = '{loja_atual}' AND l.quantidade > 0
+                WHERE l.loja = '{loja_atual}'
                 GROUP BY l.codigo, l.validade
-                HAVING l.validade <= '{limite_aviso}'
+                HAVING total_qtd > 0 AND l.validade <= '{limite_aviso}'
             """, conn)
             conn.close()
 
@@ -1128,10 +1129,11 @@ else:
 
             limite_str = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
             df_venc = pd.read_sql(f"""
-                SELECT e.loja, e.codigo, p.descricao, e.quantidade, e.validade
+                SELECT e.loja, e.codigo, p.descricao, SUM(e.quantidade) as total_qtd, e.validade
                 FROM estoque_lotes e
                 JOIN produtos p ON e.codigo = p.codigo
-                WHERE e.quantidade > 0 AND e.validade <= '{limite_str}'
+                GROUP BY e.loja, e.codigo, e.validade
+                HAVING total_qtd > 0 AND e.validade <= '{limite_str}'
             """, conn)
             conn.close()
 
@@ -1424,6 +1426,7 @@ else:
                     FROM estoque_lotes e
                     JOIN produtos p ON e.codigo = p.codigo
                     GROUP BY e.loja, p.codigo, e.validade
+                    HAVING quantidade > 0
                 """, conn)
             else:
                 df_geral = pd.read_sql(f"""
@@ -1432,6 +1435,7 @@ else:
                     JOIN produtos p ON e.codigo = p.codigo
                     WHERE e.loja = '{loja_escolhida_admin}'
                     GROUP BY p.codigo, e.validade
+                    HAVING quantidade > 0
                 """, conn)
             conn.close()
             
