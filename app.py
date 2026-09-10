@@ -4,7 +4,6 @@ import sqlite3
 from datetime import datetime, timedelta
 import io
 import xml.etree.ElementTree as ET
-import urllib.parse
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
@@ -26,16 +25,21 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- FUNÇÃO DE CONEXÃO BLINDADA ---
+def get_db_connection():
+    # O timeout=20 impede travamentos (database is locked) no Streamlit
+    return sqlite3.connect('sistema_estoque.db', timeout=20)
+
 # --- FUNÇÃO DE FORMATAÇÃO DE DATA PARA BR (DD/MM/AAAA) ---
 def formatar_data_br(val):
     if not val or pd.isna(val):
         return ""
     str_val = str(val).strip()
     try:
-        if len(str_val) >= 19:  # YYYY-MM-DD HH:MM:SS
+        if len(str_val) >= 19:
             dt = datetime.strptime(str_val[:19], "%Y-%m-%d %H:%M:%S")
             return dt.strftime("%d/%m/%Y %H:%M:%S")
-        elif len(str_val) == 10:  # YYYY-MM-DD
+        elif len(str_val) == 10:
             dt = datetime.strptime(str_val, "%Y-%m-%d")
             return dt.strftime("%d/%m/%Y")
     except:
@@ -53,136 +57,148 @@ def formatar_dataframe_datas(df):
 
 # --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 def init_db():
-    conn = sqlite3.connect('sistema_estoque.db')
-    cursor = conn.cursor()
-    
-    cursor.execute("""CREATE TABLE IF NOT EXISTS lojas (
-                        nome_loja TEXT PRIMARY KEY)""")
-    
-    cursor.execute("""CREATE TABLE IF NOT EXISTS usuarios (
-                        username TEXT PRIMARY KEY,
-                        senha TEXT,
-                        perfil TEXT,
-                        loja TEXT)""")
-    
-    lojas_iniciais = [("Loja Centro",), ("Loja Shopping",), ("Curitiba",)]
-    cursor.executemany("INSERT OR IGNORE INTO lojas VALUES (?)", lojas_iniciais)
-    
-    usuarios_iniciais = [
-        ("admin", "admin123", "Administrador", "Geral"),
-        ("gerente_centro", "123", "Gerente", "Loja Centro"),
-        ("estoque_centro", "123", "Estoquista", "Loja Centro"),
-        ("chefe_centro", "123", "Estoquista Chefe", "Loja Centro"),
-        ("gerente_shopping", "123", "Gerente", "Loja Shopping"),
-        ("estoque_shopping", "123", "Estoquista", "Loja Shopping"),
-        ("chefe_shopping", "123", "Estoquista Chefe", "Loja Shopping")
-    ]
-    cursor.executemany("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", usuarios_iniciais)
-    conn.commit()
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        cursor.execute("""CREATE TABLE IF NOT EXISTS lojas (
+                            nome_loja TEXT PRIMARY KEY)""")
+        
+        cursor.execute("""CREATE TABLE IF NOT EXISTS usuarios (
+                            username TEXT PRIMARY KEY,
+                            senha TEXT,
+                            perfil TEXT,
+                            loja TEXT)""")
+        
+        lojas_iniciais = [("Loja Centro",), ("Loja Shopping",), ("Curitiba",)]
+        cursor.executemany("INSERT OR IGNORE INTO lojas VALUES (?)", lojas_iniciais)
+        
+        usuarios_iniciais = [
+            ("admin", "admin123", "Administrador", "Geral"),
+            ("gerente_centro", "123", "Gerente", "Loja Centro"),
+            ("estoque_centro", "123", "Estoquista", "Loja Centro"),
+            ("chefe_centro", "123", "Estoquista Chefe", "Loja Centro"),
+            ("gerente_shopping", "123", "Gerente", "Loja Shopping"),
+            ("estoque_shopping", "123", "Estoquista", "Loja Shopping"),
+            ("chefe_shopping", "123", "Estoquista Chefe", "Loja Shopping")
+        ]
+        cursor.executemany("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", usuarios_iniciais)
 
-    cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (
-                        codigo TEXT PRIMARY KEY, 
-                        codigo_barras TEXT,
-                        codigo_fornecedor TEXT,
-                        descricao TEXT, 
-                        categoria TEXT, 
-                        unidade TEXT, 
-                        custo REAL,
-                        estoque_minimo REAL DEFAULT 5.0)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (
+                            codigo TEXT PRIMARY KEY, 
+                            codigo_barras TEXT,
+                            codigo_fornecedor TEXT,
+                            descricao TEXT, 
+                            categoria TEXT, 
+                            unidade TEXT, 
+                            custo REAL,
+                            estoque_minimo REAL DEFAULT 5.0)""")
 
-    for col, tipo in [("codigo_barras", "TEXT"), ("codigo_fornecedor", "TEXT")]:
-        try:
-            cursor.execute(f"ALTER TABLE produtos ADD COLUMN {col} {tipo}")
-        except:
-            pass
+        for col, tipo in [("codigo_barras", "TEXT"), ("codigo_fornecedor", "TEXT")]:
+            try:
+                cursor.execute(f"ALTER TABLE produtos ADD COLUMN {col} {tipo}")
+            except:
+                pass
 
-    cursor.execute("""CREATE TABLE IF NOT EXISTS conversoes_unidades (
-                        id_conversao INTEGER PRIMARY KEY AUTOINCREMENT,
-                        codigo_produto TEXT,
-                        unidade_origem TEXT,
-                        unidade_destino TEXT,
-                        fator_conversao REAL,
-                        FOREIGN KEY(codigo_produto) REFERENCES produtos(codigo))""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS conversoes_unidades (
+                            id_conversao INTEGER PRIMARY KEY AUTOINCREMENT,
+                            codigo_produto TEXT,
+                            unidade_origem TEXT,
+                            unidade_destino TEXT,
+                            fator_conversao REAL,
+                            FOREIGN KEY(codigo_produto) REFERENCES produtos(codigo))""")
 
-    cursor.execute("""CREATE TABLE IF NOT EXISTS estoque_lotes (
-                        id_lote INTEGER PRIMARY KEY AUTOINCREMENT,
-                        codigo TEXT,
-                        loja TEXT,
-                        quantidade REAL,
-                        validade TEXT)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS estoque_lotes (
+                            id_lote INTEGER PRIMARY KEY AUTOINCREMENT,
+                            codigo TEXT,
+                            loja TEXT,
+                            quantidade REAL,
+                            validade TEXT)""")
 
-    cursor.execute("""CREATE TABLE IF NOT EXISTS nfs_importadas (
-                        chave_nfe TEXT PRIMARY KEY,
-                        data_importacao TEXT,
-                        loja TEXT)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS nfs_importadas (
+                            chave_nfe TEXT PRIMARY KEY,
+                            data_importacao TEXT,
+                            loja TEXT)""")
 
-    cursor.execute("""CREATE TABLE IF NOT EXISTS requisicoes_loja (
-                        id_pedido INTEGER PRIMARY KEY AUTOINCREMENT,
-                        lote_id TEXT,
-                        data TEXT,
-                        loja TEXT,
-                        solicitante TEXT,
-                        codigo_produto TEXT,
-                        qtd_pedida REAL,
-                        qtd_enviada_estoque REAL DEFAULT 0,
-                        motivo_divergencia TEXT DEFAULT '',
-                        validade_sugerida TEXT DEFAULT '',
-                        validade_alterada_gerente TEXT DEFAULT '',
-                        qtd_entregue REAL DEFAULT 0,
-                        estoque_responsavel TEXT,
-                        status TEXT,
-                        observacao TEXT)""")
-    
-    colunas_req = [("qtd_enviada_estoque", "REAL DEFAULT 0"), 
-                   ("motivo_divergencia", "TEXT DEFAULT ''"), 
-                   ("validade_sugerida", "TEXT DEFAULT ''"), 
-                   ("validade_alterada_gerente", "TEXT DEFAULT ''")]
-    for col, tipo in colunas_req:
-        try:
-            cursor.execute(f"ALTER TABLE requisicoes_loja ADD COLUMN {col} {tipo}")
-        except:
-            pass
+        cursor.execute("""CREATE TABLE IF NOT EXISTS requisicoes_loja (
+                            id_pedido INTEGER PRIMARY KEY AUTOINCREMENT,
+                            lote_id TEXT,
+                            data TEXT,
+                            loja TEXT,
+                            solicitante TEXT,
+                            codigo_produto TEXT,
+                            qtd_pedida REAL,
+                            qtd_enviada_estoque REAL DEFAULT 0,
+                            motivo_divergencia TEXT DEFAULT '',
+                            validade_sugerida TEXT DEFAULT '',
+                            validade_alterada_gerente TEXT DEFAULT '',
+                            qtd_entregue REAL DEFAULT 0,
+                            estoque_responsavel TEXT,
+                            status TEXT,
+                            observacao TEXT)""")
+        
+        colunas_req = [("qtd_enviada_estoque", "REAL DEFAULT 0"), 
+                       ("motivo_divergencia", "TEXT DEFAULT ''"), 
+                       ("validade_sugerida", "TEXT DEFAULT ''"), 
+                       ("validade_alterada_gerente", "TEXT DEFAULT ''")]
+        for col, tipo in colunas_req:
+            try:
+                cursor.execute(f"ALTER TABLE requisicoes_loja ADD COLUMN {col} {tipo}")
+            except:
+                pass
 
-    cursor.execute("""CREATE TABLE IF NOT EXISTS inventarios_salvos (
-                        id_inventario INTEGER PRIMARY KEY AUTOINCREMENT,
-                        data TEXT,
-                        loja TEXT,
-                        responsavel TEXT,
-                        dados_csv TEXT)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS inventarios_salvos (
+                            id_inventario INTEGER PRIMARY KEY AUTOINCREMENT,
+                            data TEXT,
+                            loja TEXT,
+                            responsavel TEXT,
+                            dados_csv TEXT)""")
 
-    cursor.execute("""CREATE TABLE IF NOT EXISTS logs_sistema (
-                        id_log INTEGER PRIMARY KEY AUTOINCREMENT,
-                        data TEXT,
-                        usuario TEXT,
-                        loja TEXT,
-                        tipo_acao TEXT,
-                        detalhes TEXT)""")
-    
-    conn.commit()
-    conn.close()
+        cursor.execute("""CREATE TABLE IF NOT EXISTS logs_sistema (
+                            id_log INTEGER PRIMARY KEY AUTOINCREMENT,
+                            data TEXT,
+                            usuario TEXT,
+                            loja TEXT,
+                            tipo_acao TEXT,
+                            detalhes TEXT)""")
+        
+        conn.commit()
+    except Exception as e:
+        print(f"Erro ao inicializar DB: {e}")
+    finally:
+        conn.close()
 
 init_db()
 
 # --- FUNÇÃO GERADORA DE PRÓXIMO CÓDIGO AUTOMÁTICO ---
-def gerar_proximo_codigo_produto():
-    conn = sqlite3.connect('sistema_estoque.db')
-    cursor = conn.cursor()
+def gerar_proximo_codigo_produto(cursor_existente=None):
+    # Se receber um cursor já aberto, usa ele. Se não, cria um e fecha no final.
+    fecha_conn = False
+    if cursor_existente:
+        cursor = cursor_existente
+    else:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        fecha_conn = True
+        
     cursor.execute("SELECT codigo FROM produtos WHERE codigo LIKE 'PROD-%'")
     res = cursor.fetchall()
-    conn.close()
     
     if not res:
-        return "PROD-001"
-    
-    numeros = []
-    for r in res:
-        try:
-            num = int(r[0].replace("PROD-", ""))
-            numeros.append(num)
-        except:
-            pass
-    
-    proximo_num = max(numeros) + 1 if numeros else 1
+        proximo_num = 1
+    else:
+        numeros = []
+        for r in res:
+            try:
+                num = int(r[0].replace("PROD-", ""))
+                numeros.append(num)
+            except:
+                pass
+        proximo_num = max(numeros) + 1 if numeros else 1
+        
+    if fecha_conn:
+        conn.close()
+        
     return f"PROD-{proximo_num:03d}"
 
 # --- FUNÇÃO GERADORA DE PDF PARA CONFERÊNCIA ---
@@ -241,7 +257,7 @@ if not st.session_state.autenticado:
             btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
             
             if btn_login:
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("SELECT perfil, loja FROM usuarios WHERE username = ? AND senha = ?", (user_input, senha_input))
                 res = cursor.fetchone()
@@ -291,7 +307,7 @@ else:
                 if st.button("🔄 Atualizar", key="ref_g_ped"):
                     st.rerun()
 
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_produtos = pd.read_sql(f"""
                 SELECT p.codigo, p.codigo_barras, p.descricao, p.categoria, p.unidade, COALESCE(SUM(e.quantidade), 0) as estoque_atual, p.estoque_minimo, p.custo
                 FROM produtos p
@@ -360,20 +376,20 @@ else:
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 lote_id = datetime.now().strftime("LOTE-%Y%m%d%H%M%S")
                                 
-                                conn = sqlite3.connect('sistema_estoque.db')
-                                cursor = conn.cursor()
-                                
-                                for item in st.session_state.carrinho_requisicao:
-                                    cursor.execute("""INSERT INTO requisicoes_loja (lote_id, data, loja, solicitante, codigo_produto, qtd_pedida, status, observacao) 
-                                                      VALUES (?, ?, ?, ?, ?, ?, 'Aguardando Conferência', ?)""",
-                                                   (lote_id, data_hora, loja_atual, nome_resp, item['codigo'], item['quantidade'], obs_lote))
-                                
-                                desc_log = f"Requisição Lote {lote_id} ({len(st.session_state.carrinho_requisicao)} itens). Solicitante: {nome_resp}."
-                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                               (data_hora, st.session_state.usuario, loja_atual, "REQUISICAO_LOTE", desc_log))
-                                
-                                conn.commit()
-                                conn.close()
+                                conn = get_db_connection()
+                                try:
+                                    cursor = conn.cursor()
+                                    for item in st.session_state.carrinho_requisicao:
+                                        cursor.execute("""INSERT INTO requisicoes_loja (lote_id, data, loja, solicitante, codigo_produto, qtd_pedida, status, observacao) 
+                                                          VALUES (?, ?, ?, ?, ?, ?, 'Aguardando Conferência', ?)""",
+                                                       (lote_id, data_hora, loja_atual, nome_resp, item['codigo'], item['quantidade'], obs_lote))
+                                    
+                                    desc_log = f"Requisição Lote {lote_id} ({len(st.session_state.carrinho_requisicao)} itens). Solicitante: {nome_resp}."
+                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                                   (data_hora, st.session_state.usuario, loja_atual, "REQUISICAO_LOTE", desc_log))
+                                    conn.commit()
+                                finally:
+                                    conn.close()
                                 
                                 carrinho_temp = st.session_state.carrinho_requisicao.copy()
                                 st.session_state.carrinho_requisicao = []
@@ -404,7 +420,7 @@ else:
                 if st.button("🔄 Atualizar", key="ref_g_chk"):
                     st.rerun()
             
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_geral_reqs = pd.read_sql(f"""
                 SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.descricao, 
                        r.qtd_pedida AS "Qtd Solicitada", 
@@ -423,7 +439,7 @@ else:
                 
                 st.markdown("---")
                 st.markdown("### ✅ Confirmar Entrega e Dar Baixa Definitiva no Estoque da Unidade")
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_prontos = pd.read_sql(f"""
                     SELECT r.id_pedido, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque
                     FROM requisicoes_loja r
@@ -452,25 +468,25 @@ else:
                                 st.warning("Informe o seu nome.")
                             else:
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                conn = sqlite3.connect('sistema_estoque.db')
-                                cursor = conn.cursor()
-                                
-                                cursor.execute("SELECT codigo_produto FROM requisicoes_loja WHERE id_pedido = ?", (id_ped_sel,))
-                                res_item = cursor.fetchone()
-                                cod_p = res_item[0]
+                                conn = get_db_connection()
+                                try:
+                                    cursor = conn.cursor()
+                                    cursor.execute("SELECT codigo_produto FROM requisicoes_loja WHERE id_pedido = ?", (id_ped_sel,))
+                                    res_item = cursor.fetchone()
+                                    cod_p = res_item[0]
 
-                                cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", 
-                                               (qtd_entregue, responsavel_baixa.strip(), id_ped_sel))
-                                
-                                cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)", 
-                                               (cod_p, loja_atual, -qtd_entregue, datetime.now().strftime("%Y-%m-%d")))
+                                    cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", 
+                                                   (qtd_entregue, responsavel_baixa.strip(), id_ped_sel))
                                     
-                                detalhe_log = f"Check-list item #{id_ped_sel} Concluído | Baixa de {qtd_entregue} unidades do estoque de {loja_atual}."
-                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                               (data_hora, st.session_state.usuario, loja_atual, "BAIXA_CONSUMO", detalhe_log))
-                                
-                                conn.commit()
-                                conn.close()
+                                    cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)", 
+                                                   (cod_p, loja_atual, -qtd_entregue, datetime.now().strftime("%Y-%m-%d")))
+                                        
+                                    detalhe_log = f"Check-list item #{id_ped_sel} Concluído | Baixa de {qtd_entregue} unidades do estoque de {loja_atual}."
+                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                                   (data_hora, st.session_state.usuario, loja_atual, "BAIXA_CONSUMO", detalhe_log))
+                                    conn.commit()
+                                finally:
+                                    conn.close()
                                 st.success("Baixa realizada com sucesso no estoque da unidade!")
                                 st.rerun()
                 else:
@@ -490,7 +506,7 @@ else:
             
             with sub_inv1:
                 st.markdown("#### Nova Contagem de Estoque")
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_produtos_inv = pd.read_sql("SELECT codigo, descricao FROM produtos", conn)
                 conn.close()
 
@@ -518,32 +534,32 @@ else:
                         dados_csv = []
                         data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
-                        conn = sqlite3.connect('sistema_estoque.db')
-                        cursor = conn.cursor()
-                        
-                        for idx, row in df_produtos_inv.iterrows():
-                            c_real = contagens_usuario[row['codigo']]
-                            dados_csv.append({
-                                "cód": row['codigo'],
-                                "nome": row['descricao'],
-                                "contagem": c_real
-                            })
+                        conn = get_db_connection()
+                        try:
+                            cursor = conn.cursor()
+                            for idx, row in df_produtos_inv.iterrows():
+                                c_real = contagens_usuario[row['codigo']]
+                                dados_csv.append({
+                                    "cód": row['codigo'],
+                                    "nome": row['descricao'],
+                                    "contagem": c_real
+                                })
+                                
+                                cursor.execute("DELETE FROM estoque_lotes WHERE loja = ? AND codigo = ?", (loja_atual, row['codigo']))
+                                if c_real > 0:
+                                    cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
+                                                   (row['codigo'], loja_atual, c_real, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")))
                             
-                            cursor.execute("DELETE FROM estoque_lotes WHERE loja = ? AND codigo = ?", (loja_atual, row['codigo']))
-                            if c_real > 0:
-                                cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                                               (row['codigo'], loja_atual, c_real, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")))
-                        
-                        df_resultado_inv = pd.DataFrame(dados_csv)
-                        csv_string = df_resultado_inv.to_csv(index=False, sep=';', encoding='utf-8-sig')
-                        
-                        cursor.execute("INSERT INTO inventarios_salvos (data, loja, responsavel, dados_csv) VALUES (?, ?, ?, ?)",
-                                       (data_hora, loja_atual, st.session_state.usuario, csv_string))
-                        cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                       (data_hora, st.session_state.usuario, loja_atual, "INVENTARIO_AJUSTE", f"Inventário físico realizado e estoque da loja {loja_atual} ajustado."))
-                        
-                        conn.commit()
-                        conn.close()
+                            df_resultado_inv = pd.DataFrame(dados_csv)
+                            csv_string = df_resultado_inv.to_csv(index=False, sep=';', encoding='utf-8-sig')
+                            
+                            cursor.execute("INSERT INTO inventarios_salvos (data, loja, responsavel, dados_csv) VALUES (?, ?, ?, ?)",
+                                           (data_hora, loja_atual, st.session_state.usuario, csv_string))
+                            cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                           (data_hora, st.session_state.usuario, loja_atual, "INVENTARIO_AJUSTE", f"Inventário físico realizado e estoque da loja {loja_atual} ajustado."))
+                            conn.commit()
+                        finally:
+                            conn.close()
                         
                         st.success("Contagem salva e estoque da unidade ajustado com sucesso! Acesse a aba 'Histórico' para baixar o CSV.")
                 else:
@@ -551,7 +567,7 @@ else:
 
             with sub_inv2:
                 st.markdown("#### 📂 Histórico de Inventários Realizados")
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_hist_inv = pd.read_sql(f"SELECT id_inventario, data, responsavel FROM inventarios_salvos WHERE loja = '{loja_atual}' ORDER BY id_inventario DESC", conn)
                 conn.close()
 
@@ -560,7 +576,7 @@ else:
                     
                     inv_id_sel = st.selectbox("Selecione o ID do Inventário para Baixar o CSV", df_hist_inv['id_inventario'].tolist())
                     if inv_id_sel:
-                        conn = sqlite3.connect('sistema_estoque.db')
+                        conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute("SELECT dados_csv, data FROM inventarios_salvos WHERE id_inventario = ?", (inv_id_sel,))
                         res_inv = cursor.fetchone()
@@ -587,7 +603,7 @@ else:
                 if st.button("🔄 Atualizar", key="ref_g_al"):
                     st.rerun()
 
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             limite_aviso = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
             
             df_validades_loja = pd.read_sql(f"""
@@ -643,7 +659,7 @@ else:
                 if st.button("🔄 Atualizar", key="ref_e_conf"):
                     st.rerun()
 
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_reqs_estoque = pd.read_sql(f"""
                 SELECT r.id_pedido, r.lote_id, r.data, r.solicitante, p.codigo, p.descricao, r.qtd_pedida, r.status
                 FROM requisicoes_loja r
@@ -679,23 +695,25 @@ else:
                             data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             v_str = val_sug.strftime("%Y-%m-%d")
                             
-                            conn = sqlite3.connect('sistema_estoque.db')
-                            cursor = conn.cursor()
-                            cursor.execute("""UPDATE requisicoes_loja 
-                                              SET qtd_enviada_estoque = ?, motivo_divergencia = ?, validade_sugerida = ?, status = 'Pronto para Check-list' 
-                                              WHERE id_pedido = ?""",
-                                           (qtd_enviada, motivo_div.strip(), v_str, id_conf))
-                            
-                            cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                           (data_hora, st.session_state.usuario, loja_atual, "SEPARACAO_PEDIDO", f"Separação item #{id_conf}: Qtd separada={qtd_enviada}"))
-                            conn.commit()
-                            conn.close()
+                            conn = get_db_connection()
+                            try:
+                                cursor = conn.cursor()
+                                cursor.execute("""UPDATE requisicoes_loja 
+                                                  SET qtd_enviada_estoque = ?, motivo_divergencia = ?, validade_sugerida = ?, status = 'Pronto para Check-list' 
+                                                  WHERE id_pedido = ?""",
+                                               (qtd_enviada, motivo_div.strip(), v_str, id_conf))
+                                
+                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                               (data_hora, st.session_state.usuario, loja_atual, "SEPARACAO_PEDIDO", f"Separação item #{id_conf}: Qtd separada={qtd_enviada}"))
+                                conn.commit()
+                            finally:
+                                conn.close()
                             st.success("Separação confirmada com sucesso! O pedido foi liberado para o check-list final da unidade.")
                             st.rerun()
 
                 st.markdown("---")
                 st.markdown("### 🖨️ Histórico de Separações & Download em PDF")
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_historico = pd.read_sql(f"""
                     SELECT r.id_pedido, r.lote_id, r.solicitante, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.motivo_divergencia, r.validade_sugerida, r.status
                     FROM requisicoes_loja r
@@ -736,7 +754,7 @@ else:
                 if st.button("🔄 Atualizar", key="ref_e_est"):
                     st.rerun()
 
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_estoque = pd.read_sql(f"""
                 SELECT p.codigo, p.codigo_barras, p.codigo_fornecedor, p.descricao, p.categoria, p.unidade, COALESCE(SUM(e.quantidade), 0) as quantidade_total, p.estoque_minimo, p.custo
                 FROM produtos p
@@ -753,7 +771,7 @@ else:
                 prod_detalhe = st.selectbox("Selecione um produto para ver os lotes e validades", df_estoque['descricao'].tolist())
                 cod_sel = df_estoque.loc[df_estoque['descricao'] == prod_detalhe, 'codigo'].values[0]
                 
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_lotes_prod = pd.read_sql(f"SELECT quantidade, validade FROM estoque_lotes WHERE codigo = '{cod_sel}' AND loja = '{loja_atual}' AND quantidade > 0", conn)
                 conn.close()
                 
@@ -781,7 +799,7 @@ else:
                         nNF_el = root.find('.//nfe:ide/nfe:nNF', ns)
                         chave_nfe = nNF_el.text if nNF_el is not None else "XML-GENERICO"
 
-                    conn = sqlite3.connect('sistema_estoque.db')
+                    conn = get_db_connection()
                     cursor = conn.cursor()
                     cursor.execute("SELECT chave_nfe FROM nfs_importadas WHERE chave_nfe = ?", (chave_nfe,))
                     ja_importada = cursor.fetchone()
@@ -825,46 +843,51 @@ else:
                             
                             if btn_conf_xml:
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                conn = sqlite3.connect('sistema_estoque.db')
-                                cursor = conn.cursor()
-                                
-                                for i, item in enumerate(itens_nf):
-                                    v_escolhida = validades_digitadas[i]
-                                    v_str = v_escolhida.strftime("%Y-%m-%d") if v_escolhida else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
-                                    q_real = item['Qtd']
-                                    un_fisica = unidades_fisicas[i].strip() if unidades_fisicas[i].strip() else item['UnidadeXML']
-                                    cod_forn = item["Código"]
+                                conn = get_db_connection()
+                                try:
+                                    cursor = conn.cursor()
                                     
-                                    cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
-                                    prod_existente = cursor.fetchone()
+                                    for i, item in enumerate(itens_nf):
+                                        v_escolhida = validades_digitadas[i]
+                                        v_str = v_escolhida.strftime("%Y-%m-%d") if v_escolhida else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
+                                        q_real = item['Qtd']
+                                        un_fisica = unidades_fisicas[i].strip() if unidades_fisicas[i].strip() else item['UnidadeXML']
+                                        cod_forn = item["Código"]
+                                        
+                                        cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
+                                        prod_existente = cursor.fetchone()
+                                        
+                                        if prod_existente:
+                                            cod_sistema = prod_existente[0]
+                                            cursor.execute("UPDATE produtos SET unidade = ?, custo = ? WHERE codigo = ?", (un_fisica, item['Custo'], cod_sistema))
+                                        else:
+                                            # Chama a função passando O MESMO CURSOR já aberto, impedindo o travamento do banco
+                                            cod_sistema = gerar_proximo_codigo_produto(cursor)
+                                            cursor.execute("""INSERT INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) 
+                                                              VALUES (?, '', ?, ?, 'Geral', ?, ?, 5.0)""",
+                                                           (cod_sistema, cod_forn, item['Descrição'], un_fisica, item['Custo']))
+                                        
+                                        cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
+                                                       (cod_sistema, loja_atual, q_real, v_str))
                                     
-                                    if prod_existente:
-                                        cod_sistema = prod_existente[0]
-                                        cursor.execute("UPDATE produtos SET unidade = ?, custo = ? WHERE codigo = ?", (un_fisica, item['Custo'], cod_sistema))
-                                    else:
-                                        cod_sistema = gerar_proximo_codigo_produto()
-                                        cursor.execute("""INSERT INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) 
-                                                          VALUES (?, '', ?, ?, 'Geral', ?, ?, 5.0)""",
-                                                       (cod_sistema, cod_forn, item['Descrição'], un_fisica, item['Custo']))
+                                    cursor.execute("INSERT OR REPLACE INTO nfs_importadas (chave_nfe, data_importacao, loja) VALUES (?, ?, ?)",
+                                                   (chave_nfe, data_hora, loja_atual))
                                     
-                                    cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                                                   (cod_sistema, loja_atual, q_real, v_str))
-                                
-                                cursor.execute("INSERT OR REPLACE INTO nfs_importadas (chave_nfe, data_importacao, loja) VALUES (?, ?, ?)",
-                                               (chave_nfe, data_hora, loja_atual))
-                                
-                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                               (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_XML", f"Entrada NF-e chave {chave_nfe} em {loja_atual} com {len(itens_nf)} itens."))
-                                
-                                conn.commit()
-                                conn.close()
-                                st.success("🎉 Todos os itens da Nota Fiscal foram cadastrados e deram entrada no estoque com sucesso!")
+                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                                   (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_XML", f"Entrada NF-e chave {chave_nfe} em {loja_atual} com {len(itens_nf)} itens."))
+                                    
+                                    conn.commit()
+                                    st.success("🎉 Todos os itens da Nota Fiscal foram cadastrados e deram entrada no estoque com sucesso!")
+                                except Exception as db_err:
+                                    st.error(f"Erro durante gravação no banco: {db_err}")
+                                finally:
+                                    conn.close()
                 except Exception as e:
                     st.error(f"❌ Erro ao processar o XML: {e}")
 
         with tab_manual:
             st.markdown("### ✍️ Entrada Manual de Estoque")
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_prods_m = pd.read_sql("SELECT codigo, descricao, unidade FROM produtos", conn)
             conn.close()
             
@@ -890,21 +913,23 @@ else:
                             data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             v_str = val_m.strftime("%Y-%m-%d") if val_m else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
                             
-                            conn = sqlite3.connect('sistema_estoque.db')
-                            cursor = conn.cursor()
-                            cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                                           (cod_m, loja_atual, qtd_m, v_str))
-                            cursor.execute("UPDATE produtos SET custo = ? WHERE codigo = ?", (custo_m, cod_m))
-                            cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                           (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_MANUAL", f"Entrada manual de {qtd_m} {unid_reg} em {loja_atual}."))
-                            conn.commit()
-                            conn.close()
+                            conn = get_db_connection()
+                            try:
+                                cursor = conn.cursor()
+                                cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
+                                               (cod_m, loja_atual, qtd_m, v_str))
+                                cursor.execute("UPDATE produtos SET custo = ? WHERE codigo = ?", (custo_m, cod_m))
+                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                               (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_MANUAL", f"Entrada manual de {qtd_m} {unid_reg} em {loja_atual}."))
+                                conn.commit()
+                            finally:
+                                conn.close()
                             st.success("Entrada manual registrada com sucesso!")
 
         if perfil_atual == "Estoquista Chefe":
             with tab_baixa:
                 st.markdown("### ⚠️ Baixa Manual de Estoque (Avaria / Vencimento)")
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_est_b = pd.read_sql(f"""
                     SELECT p.codigo, p.descricao, SUM(e.quantidade) as quantidade
                     FROM produtos p
@@ -931,14 +956,16 @@ else:
                             else:
                                 cod_b = df_est_b.loc[df_est_b['descricao'] == prod_baixa, 'codigo'].values[0]
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                conn = sqlite3.connect('sistema_estoque.db')
-                                cursor = conn.cursor()
-                                cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                                               (cod_b, loja_atual, -qtd_baixa, datetime.now().strftime("%Y-%m-%d")))
-                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                               (data_hora, st.session_state.usuario, loja_atual, "BAIXA_ESTOQUE", f"Baixa de {qtd_baixa} em {loja_atual}. Motivo: {motivo_baixa}"))
-                                conn.commit()
-                                conn.close()
+                                conn = get_db_connection()
+                                try:
+                                    cursor = conn.cursor()
+                                    cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
+                                                   (cod_b, loja_atual, -qtd_baixa, datetime.now().strftime("%Y-%m-%d")))
+                                    cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                                   (data_hora, st.session_state.usuario, loja_atual, "BAIXA_ESTOQUE", f"Baixa de {qtd_baixa} em {loja_atual}. Motivo: {motivo_baixa}"))
+                                    conn.commit()
+                                finally:
+                                    conn.close()
                                 st.success("Baixa realizada com sucesso!")
                                 st.rerun()
                 else:
@@ -952,7 +979,7 @@ else:
                 if st.button("🔄 Atualizar", key="ref_e_al"):
                     st.rerun()
 
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             limite_aviso = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
             
             df_validades_ch = pd.read_sql(f"""
@@ -995,7 +1022,7 @@ else:
                 if st.button("🔄 Atualizar", key="ref_adm_al"):
                     st.rerun()
 
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_abaixo = pd.read_sql("""
                 SELECT e.loja, p.codigo, p.descricao, COALESCE(SUM(e.quantidade), 0) as qtd_atual, p.estoque_minimo
                 FROM estoque_lotes e
@@ -1037,19 +1064,20 @@ else:
                     nova_loja = st.text_input("Nome da Nova Loja")
                     cad_loja = st.form_submit_button("Cadastrar Loja", use_container_width=True)
                     if cad_loja and nova_loja.strip():
-                        conn = sqlite3.connect('sistema_estoque.db')
-                        cursor = conn.cursor()
+                        conn = get_db_connection()
                         try:
+                            cursor = conn.cursor()
                             cursor.execute("INSERT INTO lojas VALUES (?)", (nova_loja.strip(),))
                             conn.commit()
                             st.success(f"Loja '{nova_loja}' cadastrada com sucesso!")
                             st.rerun()
-                        except:
-                            st.error("Esta loja já existe.")
-                        conn.close()
+                        except Exception as e:
+                            st.error(f"Erro: {e}")
+                        finally:
+                            conn.close()
 
             with sub_l2:
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_lojas_alt = pd.read_sql("SELECT * FROM lojas", conn)
                 conn.close()
                 if not df_lojas_alt.empty:
@@ -1058,9 +1086,9 @@ else:
                         novo_nome_loja = st.text_input("Novo Nome da Loja")
                         btn_alt_loja = st.form_submit_button("Salvar Alteração de Nome", use_container_width=True)
                         if btn_alt_loja and novo_nome_loja.strip():
-                            conn = sqlite3.connect('sistema_estoque.db')
-                            cursor = conn.cursor()
+                            conn = get_db_connection()
                             try:
+                                cursor = conn.cursor()
                                 cursor.execute("UPDATE lojas SET nome_loja = ? WHERE nome_loja = ?", (novo_nome_loja.strip(), loja_antiga))
                                 cursor.execute("UPDATE usuarios SET loja = ? WHERE loja = ?", (novo_nome_loja.strip(), loja_antiga))
                                 cursor.execute("UPDATE estoque_lotes SET loja = ? WHERE loja = ?", (novo_nome_loja.strip(), loja_antiga))
@@ -1070,12 +1098,13 @@ else:
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erro ao alterar: {e}")
-                            conn.close()
+                            finally:
+                                conn.close()
                 else:
                     st.info("Nenhuma loja cadastrada.")
 
             with sub_l3:
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_lojas = pd.read_sql("SELECT * FROM lojas", conn)
                 conn.close()
                 if not df_lojas.empty:
@@ -1083,26 +1112,28 @@ else:
                         loja_para_excluir = st.selectbox("Selecione uma loja para excluir", df_lojas['nome_loja'].tolist())
                         btn_del_loja = st.form_submit_button("Excluir Loja Selecionada", use_container_width=True)
                         if btn_del_loja:
-                            conn = sqlite3.connect('sistema_estoque.db')
-                            cursor = conn.cursor()
-                            cursor.execute("DELETE FROM lojas WHERE nome_loja = ?", (loja_para_excluir,))
-                            cursor.execute("DELETE FROM usuarios WHERE loja = ?", (loja_para_excluir,))
-                            conn.commit()
-                            conn.close()
-                            st.success(f"Loja '{loja_para_excluir}' excluída com sucesso!")
-                            st.rerun()
+                            conn = get_db_connection()
+                            try:
+                                cursor = conn.cursor()
+                                cursor.execute("DELETE FROM lojas WHERE nome_loja = ?", (loja_para_excluir,))
+                                cursor.execute("DELETE FROM usuarios WHERE loja = ?", (loja_para_excluir,))
+                                conn.commit()
+                                st.success(f"Loja '{loja_para_excluir}' excluída com sucesso!")
+                                st.rerun()
+                            finally:
+                                conn.close()
                 else:
                     st.info("Nenhuma loja cadastrada.")
                     
             st.markdown("---")
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_lojas_geral = pd.read_sql("SELECT * FROM lojas", conn)
             conn.close()
             st.dataframe(df_lojas_geral, use_container_width=True, hide_index=True)
                 
         with tab_users:
             st.markdown("### 👥 Gerenciamento de Usuários")
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_l = pd.read_sql("SELECT * FROM lojas", conn)
             conn.close()
             lista_lojas_cad = df_l['nome_loja'].tolist() if not df_l.empty else []
@@ -1119,16 +1150,18 @@ else:
                 
                 cad_user = st.form_submit_button("Salvar / Alterar Usuário", use_container_width=True)
                 if cad_user and u_nome.strip() and u_senha.strip():
-                    conn = sqlite3.connect('sistema_estoque.db')
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT OR REPLACE INTO usuarios VALUES (?, ?, ?, ?)", (u_nome.strip(), u_senha, u_perfil, u_loja))
-                    conn.commit()
-                    conn.close()
-                    st.success("Usuário salvo com sucesso!")
-                    st.rerun()
+                    conn = get_db_connection()
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT OR REPLACE INTO usuarios VALUES (?, ?, ?, ?)", (u_nome.strip(), u_senha, u_perfil, u_loja))
+                        conn.commit()
+                        st.success("Usuário salvo com sucesso!")
+                        st.rerun()
+                    finally:
+                        conn.close()
                     
             st.markdown("---")
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_users = pd.read_sql("SELECT * FROM usuarios", conn)
             conn.close()
             st.dataframe(df_users, use_container_width=True, hide_index=True)
@@ -1151,19 +1184,21 @@ else:
                 
                 salvar_prod = st.form_submit_button("Cadastrar Produto Mestre", use_container_width=True)
                 if salvar_prod and c_cod.strip():
-                    conn = sqlite3.connect('sistema_estoque.db')
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT OR REPLACE INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                   (c_cod.strip(), c_barras.strip(), c_forn.strip(), c_desc.strip(), c_cat.strip(), c_un.strip(), c_custo, c_min))
-                    conn.commit()
-                    conn.close()
-                    st.success("Produto cadastrado com sucesso!")
+                    conn = get_db_connection()
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT OR REPLACE INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                       (c_cod.strip(), c_barras.strip(), c_forn.strip(), c_desc.strip(), c_cat.strip(), c_un.strip(), c_custo, c_min))
+                        conn.commit()
+                        st.success("Produto cadastrado com sucesso!")
+                    finally:
+                        conn.close()
 
         with tab_conv:
             st.markdown("### 🔄 Cadastro de Equivalência e Fatores de Conversão")
             st.markdown("*(Exemplo: 1 Caixa (Cx) equivale a 12 Fardos (Fd) ou 1 Fardo (Fd) equivale a 24 Unidades (un).)*")
             
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_prods_conv = pd.read_sql("SELECT codigo, descricao FROM produtos", conn)
             conn.close()
             
@@ -1182,17 +1217,19 @@ else:
                     btn_salvar_conv = st.form_submit_button("Salvar Regra de Conversão", use_container_width=True)
                     if btn_salvar_conv:
                         cod_p_conv = df_prods_conv.loc[df_prods_conv['descricao'] == p_sel_conv, 'codigo'].values[0]
-                        conn = sqlite3.connect('sistema_estoque.db')
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT INTO conversoes_unidades (codigo_produto, unidade_origem, unidade_destino, fator_conversao) VALUES (?, ?, ?, ?)",
-                                       (cod_p_conv, un_origem.strip(), un_destino.strip(), fator))
-                        conn.commit()
-                        conn.close()
-                        st.success("Regra de conversão cadastrada com sucesso!")
+                        conn = get_db_connection()
+                        try:
+                            cursor = conn.cursor()
+                            cursor.execute("INSERT INTO conversoes_unidades (codigo_produto, unidade_origem, unidade_destino, fator_conversao) VALUES (?, ?, ?, ?)",
+                                           (cod_p_conv, un_origem.strip(), un_destino.strip(), fator))
+                            conn.commit()
+                            st.success("Regra de conversão cadastrada com sucesso!")
+                        finally:
+                            conn.close()
                 
                 st.markdown("---")
                 st.markdown("#### 📋 Regras de Conversão Cadastradas")
-                conn = sqlite3.connect('sistema_estoque.db')
+                conn = get_db_connection()
                 df_regras = pd.read_sql("""
                     SELECT c.id_conversao, p.descricao, c.unidade_origem, c.unidade_destino, c.fator_conversao
                     FROM conversoes_unidades c
@@ -1208,7 +1245,7 @@ else:
 
         with tab_editar_prod:
             st.markdown("### 🛠️ Consulta e Edição de Produtos")
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_mestre = pd.read_sql("SELECT * FROM produtos", conn)
             conn.close()
             
@@ -1229,20 +1266,22 @@ else:
                     
                     btn_salvar_edicao = st.form_submit_button("Salvar Alterações", use_container_width=True)
                     if btn_salvar_edicao:
-                        conn = sqlite3.connect('sistema_estoque.db')
-                        cursor = conn.cursor()
-                        cursor.execute("""UPDATE produtos SET codigo = ?, codigo_barras = ?, codigo_fornecedor = ?, descricao = ?, categoria = ?, unidade = ?, custo = ?, estoque_minimo = ? WHERE codigo = ?""",
-                                       (e_cod.strip(), e_barras.strip(), e_forn.strip(), e_desc.strip(), e_cat.strip(), e_un.strip(), e_custo, e_min, item_atual['codigo']))
-                        conn.commit()
-                        conn.close()
-                        st.success("Atualizado com sucesso!")
-                        st.rerun()
+                        conn = get_db_connection()
+                        try:
+                            cursor = conn.cursor()
+                            cursor.execute("""UPDATE produtos SET codigo = ?, codigo_barras = ?, codigo_fornecedor = ?, descricao = ?, categoria = ?, unidade = ?, custo = ?, estoque_minimo = ? WHERE codigo = ?""",
+                                           (e_cod.strip(), e_barras.strip(), e_forn.strip(), e_desc.strip(), e_cat.strip(), e_un.strip(), e_custo, e_min, item_atual['codigo']))
+                            conn.commit()
+                            st.success("Atualizado com sucesso!")
+                            st.rerun()
+                        finally:
+                            conn.close()
             else:
                 st.info("Nenhum produto cadastrado.")
                         
         with tab_excel:
             st.markdown("### 📊 Importação / Exportação Excel")
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_export = pd.read_sql("SELECT * FROM produtos", conn)
             conn.close()
             
@@ -1257,14 +1296,16 @@ else:
             if uploaded_excel is not None:
                 df_imp = pd.read_excel(uploaded_excel)
                 if st.button("Confirmar Importação em Massa", use_container_width=True):
-                    conn = sqlite3.connect('sistema_estoque.db')
-                    cursor = conn.cursor()
-                    for _, row in df_imp.iterrows():
-                        cursor.execute("INSERT OR REPLACE INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                       (str(row['codigo']), str(row.get('codigo_barras', '')), str(row.get('codigo_fornecedor', '')), str(row['descricao']), str(row['categoria']), str(row['unidade']), float(row['custo']), float(row.get('estoque_minimo', 5.0))))
-                    conn.commit()
-                    conn.close()
-                    st.success("Importado com sucesso!")
+                    conn = get_db_connection()
+                    try:
+                        cursor = conn.cursor()
+                        for _, row in df_imp.iterrows():
+                            cursor.execute("INSERT OR REPLACE INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                           (str(row['codigo']), str(row.get('codigo_barras', '')), str(row.get('codigo_fornecedor', '')), str(row['descricao']), str(row['categoria']), str(row['unidade']), float(row['custo']), float(row.get('estoque_minimo', 5.0))))
+                        conn.commit()
+                        st.success("Importado com sucesso!")
+                    finally:
+                        conn.close()
 
         with tab_visao:
             col_t1, col_t2 = st.columns([5, 1])
@@ -1274,14 +1315,14 @@ else:
                 if st.button("🔄 Atualizar", key="ref_adm_vis"):
                     st.rerun()
 
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_l = pd.read_sql("SELECT * FROM lojas", conn)
             conn.close()
             lista_lojas_filtro = df_l['nome_loja'].tolist() if not df_l.empty else []
             lista_lojas_filtro.insert(0, "Todas as Lojas (Consolidado)")
             loja_escolhida_admin = st.selectbox("Filtrar por Unidade", lista_lojas_filtro)
             
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             if loja_escolhida_admin == "Todas as Lojas (Consolidado)":
                 df_geral = pd.read_sql("""
                     SELECT e.loja, p.codigo, p.codigo_barras, p.codigo_fornecedor, p.descricao, p.categoria, SUM(e.quantidade) as quantidade, p.unidade, p.estoque_minimo, p.custo, e.validade
@@ -1312,7 +1353,7 @@ else:
                 if st.button("🔄 Atualizar", key="ref_adm_log"):
                     st.rerun()
 
-            conn = sqlite3.connect('sistema_estoque.db')
+            conn = get_db_connection()
             df_logs_full = pd.read_sql("SELECT * FROM logs_sistema", conn)
             
             col_f1, col_f2, col_f3 = st.columns(3)
