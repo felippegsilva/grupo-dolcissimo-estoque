@@ -54,8 +54,16 @@ def formatar_dataframe_datas(df):
             df_copia[col] = df_copia[col].apply(formatar_data_br)
     return df_copia
 
-# --- FUNÇÃO FIFO DE DESCONTO AUTOMÁTICO & LIMPEZA DE LOTES ZERADOS ---
-def descontar_estoque_fifo(cursor, codigo, loja, qtd_a_descontar):
+# --- FUNÇÃO FIFO COM PERMISSÃO DE SALDO NEGATIVO POR VALIDADE ---
+def descontar_estoque_fifo_com_negativo(cursor, codigo, loja, qtd_a_descontar, validade_informada):
+    # Busca lotes com saldo positivo para abater primeiro (FIFO)
+    cursor.execute("""
+        id_lote, validade, quantidade 
+        FROM estoque_lotes 
+        WHERE codigo = ? AND loja = ? AND quantidade > 0 
+        ORDER BY validade ASC
+    """, (codigo, loja))
+    # Correção da query para compatibilidade segura
     cursor.execute("""
         SELECT validade, SUM(quantidade) as qtd 
         FROM estoque_lotes 
@@ -67,6 +75,8 @@ def descontar_estoque_fifo(cursor, codigo, loja, qtd_a_descontar):
     lotes = cursor.fetchall()
     
     restante = qtd_a_descontar
+    
+    # Abate dos lotes existentes mais antigos
     for val, qtd in lotes:
         if restante <= 0:
             break
@@ -75,11 +85,13 @@ def descontar_estoque_fifo(cursor, codigo, loja, qtd_a_descontar):
                        (codigo, loja, -desconto, val))
         restante -= desconto
     
+    # Se ainda sobrar quantidade a descontar (estoque insuficiente), lança o restante negativo na validade informada/escolhida
     if restante > 0:
+        val_str = validade_informada if validade_informada else datetime.now().strftime("%Y-%m-%d")
         cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                       (codigo, loja, -restante, datetime.now().strftime("%Y-%m-%d")))
+                       (codigo, loja, -restante, val_str))
     
-    # Remove registros antigos cujos saldos consolidados por validade ficaram zerados ou negativos (limpeza do banco)
+    # Limpeza de registros zerados consolidados por validade
     cursor.execute("""
         DELETE FROM estoque_lotes 
         WHERE codigo = ? AND loja = ? AND validade IN (
@@ -542,7 +554,9 @@ else:
                                         cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, validade_alterada_gerente = ?, estoque_responsavel = ?, status = 'Concluído' WHERE id_pedido = ?", 
                                                        (qtd_entregue, validade_gerente_edit.strip(), responsavel_baixa.strip(), id_ped_sel))
                                         
-                                        descontar_estoque_fifo(cursor, cod_p, loja_atual, qtd_entregue)
+                                        # Executa a baixa permitindo saldo negativo na validade informada/editada
+                                        data_val_baixa = validade_gerente_edit.strip() if validade_gerente_edit.strip() else datetime.now().strftime("%Y-%m-%d")
+                                        descontar_estoque_fifo_com_negativo(cursor, cod_p, loja_atual, qtd_entregue, data_val_baixa)
                                             
                                         detalhe_log = f"Check-list item #{id_ped_sel} Concluído por {responsavel_baixa.strip()} | Baixa de {qtd_entregue} unidades em {loja_atual}. Validade conferida: {validade_gerente_edit}."
                                         cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
@@ -780,17 +794,17 @@ else:
                                 val_str = row_lote['validade']
                                 qtd_disp = row_lote['qtd']
                                 val_br = formatar_data_br(val_str)
-                                entradas_lotes[val_str] = st.number_input(f"Lote: {val_br} (Disp: {qtd_disp})", min_value=0.0, max_value=float(qtd_disp), value=0.0, step=1.0, key=f"conf_lote_{i}")
+                                entradas_lotes[val_str] = st.number_input(f"Lote: {val_br} (Disp: {qtd_disp})", min_value=0.0, value=0.0, step=1.0, key=f"conf_lote_{i}")
                         else:
-                            st.warning("⚠️ O sistema não encontrou saldo positivo para este item nas validades.")
+                            st.info("ℹ️ Nenhum lote com saldo positivo encontrado. Você pode informar a quantidade total e a validade abaixo (o saldo ficará negativo).")
 
                         st.markdown("---")
-                        st.markdown("**Outra validade (não listada acima):**")
+                        st.markdown("**Outra validade ou Quantidade Excedente (Permite Saldo Negativo):**")
                         col_e1, col_e2 = st.columns(2)
                         with col_e1:
-                            qtd_outra = st.number_input("Qtd de Outra Validade", min_value=0.0, value=0.0, step=1.0)
+                            qtd_outra = st.number_input("Qtd de Outra Validade / Excedente", min_value=0.0, value=0.0, step=1.0)
                         with col_e2:
-                            val_outra = st.date_input("Data Extra", value=None, format="DD/MM/YYYY")
+                            val_outra = st.date_input("Data da Validade", value=None, format="DD/MM/YYYY")
 
                         motivo_div = st.text_input("Motivo de Divergência (Obrigatório se Total Separado ≠ Solicitado)")
                         
@@ -805,14 +819,18 @@ else:
                                     partes_val.append(f"{q}x ({formatar_data_br(v_str)})")
                             if qtd_outra > 0 and val_outra:
                                 partes_val.append(f"{qtd_outra}x ({val_outra.strftime('%d/%m/%Y')})")
+                            elif qtd_outra > 0 and not val_outra:
+                                partes_val.append(f"{qtd_outra}x (Data Atual)")
                             
                             val_sug_final = " | ".join(partes_val)
 
                             if qtd_total_enviada == 0:
                                 st.warning("⚠️ Você precisa separar pelo menos uma unidade maior que zero!")
                             elif qtd_outra > 0 and val_outra is None:
-                                st.warning("⚠️ Preencha a Data Extra da quantidade inserida manualmente.")
-                            elif qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
+                                # Se inseriu quantidade extra mas não colocou data, assume a data atual por segurança
+                                pass
+                            
+                            if qtd_total_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
                                 st.warning("⚠️ Como a quantidade separada é diferente da solicitada, o motivo de divergência é obrigatório!")
                             else:
                                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -883,18 +901,18 @@ else:
                 st.dataframe(df_estoque[['codigo', 'codigo_barras', 'codigo_fornecedor', 'descricao', 'categoria', 'quantidade_total', 'unidade', 'estoque_minimo', 'custo']], use_container_width=True, hide_index=True)
                 
                 st.markdown("---")
-                st.markdown("#### 🔍 Detalhamento de Saldos por Validade (Lotes)")
+                st.markdown("#### 🔍 Detalhamento de Saldos por Validade (Lotes / Permite Negativos)")
                 prod_detalhe = st.selectbox("Selecione um produto para ver os lotes e validades", df_estoque['descricao'].tolist())
                 cod_sel = df_estoque.loc[df_estoque['descricao'] == prod_detalhe, 'codigo'].values[0]
                 
                 conn = get_db_connection()
-                # Exibe apenas lotes com saldo positivo > 0 e limpa saldos zerados
+                # Exibe saldos consolidados por validade (mostrando negativos caso existam e ocultando apenas os realmente zerados)
                 df_lotes_prod = pd.read_sql(f"""
                     SELECT validade as Validade, SUM(quantidade) as Quantidade
                     FROM estoque_lotes 
                     WHERE codigo = '{cod_sel}' AND loja = '{loja_atual}' 
                     GROUP BY validade 
-                    HAVING Quantidade > 0 
+                    HAVING Quantidade != 0 
                     ORDER BY validade ASC
                 """, conn)
                 conn.close()
@@ -902,7 +920,7 @@ else:
                 if not df_lotes_prod.empty:
                     st.dataframe(formatar_dataframe_datas(df_lotes_prod), use_container_width=True, hide_index=True)
                 else:
-                    st.info("Nenhum lote com saldo positivo para este item.")
+                    st.info("Nenhum lote com saldo registrado para este item.")
             else:
                 st.info("Nenhum produto cadastrado.")
             
@@ -1058,7 +1076,6 @@ else:
                     FROM produtos p
                     JOIN estoque_lotes e ON p.codigo = e.codigo AND e.loja = '{loja_atual}'
                     GROUP BY p.codigo
-                    HAVING quantidade > 0
                 """, conn)
                 conn.close()
                 
@@ -1082,7 +1099,7 @@ else:
                                 conn = get_db_connection()
                                 try:
                                     cursor = conn.cursor()
-                                    descontar_estoque_fifo(cursor, cod_b, loja_atual, qtd_baixa)
+                                    descontar_estoque_fifo_com_negativo(cursor, cod_b, loja_atual, qtd_baixa, datetime.now().strftime("%Y-%m-%d"))
                                     cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
                                                    (data_hora, st.session_state.usuario, loja_atual, "BAIXA_ESTOQUE", f"Baixa de {qtd_baixa} em {loja_atual}. Motivo: {motivo_baixa}"))
                                     conn.commit()
@@ -1091,7 +1108,7 @@ else:
                                 st.success("Baixa realizada com sucesso!")
                                 st.rerun()
                 else:
-                    st.info("Nenhum item com saldo positivo.")
+                    st.info("Nenhum produto cadastrado.")
 
         with tab_alertas_ch:
             col_t1, col_t2 = st.columns([5, 1])
@@ -1452,7 +1469,7 @@ else:
                     FROM estoque_lotes e
                     JOIN produtos p ON e.codigo = p.codigo
                     GROUP BY e.loja, p.codigo, e.validade
-                    HAVING quantidade > 0
+                    HAVING quantidade != 0
                 """, conn)
             else:
                 df_geral = pd.read_sql(f"""
@@ -1461,7 +1478,7 @@ else:
                     JOIN produtos p ON e.codigo = p.codigo
                     WHERE e.loja = '{loja_escolhida_admin}'
                     GROUP BY p.codigo, e.validade
-                    HAVING quantidade > 0
+                    HAVING quantidade != 0
                 """, conn)
             conn.close()
             
