@@ -35,9 +35,11 @@ def formatar_data_br(val):
         if len(str_val) >= 19:  # YYYY-MM-DD HH:MM:SS
             dt = datetime.strptime(str_val[:19], "%Y-%m-%d %H:%M:%S")
             return dt.strftime("%d/%m/%Y %H:%M:%S")
-        elif len(str_val) == 10:  # YYYY-MM-DD
+        elif len(str_val) == 10 and '-' in str_val:  # YYYY-MM-DD
             dt = datetime.strptime(str_val, "%Y-%m-%d")
             return dt.strftime("%d/%m/%Y")
+        elif len(str_val) == 10 and '/' in str_val:  # Já está em dd/mm/aaaa
+            return str_val
     except:
         pass
     return str_val
@@ -827,9 +829,9 @@ else:
                             
                             for i, item in enumerate(itens_nf):
                                 v_str = validades_digitadas[i].strftime("%Y-%m-%d") if validades_digitadas[i] else datetime.now().strftime("%Y-%m-%d")
-                                q_real = item['Qtd']  # Quantidade travada diretamente da nota
+                                q_real = item['Qtd']
                                 un_fisica = unidades_fisicas[i].strip() if unidades_fisicas[i].strip() else item['UnidadeXML']
-                                cod_forn = item["Código"]
+                                cod_forn = item['Código']
                                 
                                 cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
                                 prod_existente = cursor.fetchone()
@@ -895,6 +897,8 @@ else:
                             conn.commit()
                             conn.close()
                             st.success("Entrada manual registrada com sucesso!")
+            else:
+                st.info("Nenhum produto cadastrado para realizar entrada manual.")
 
         if perfil_atual == "Estoquista Chefe":
             with tab_baixa:
