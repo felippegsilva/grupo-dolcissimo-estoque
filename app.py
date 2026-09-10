@@ -68,8 +68,7 @@ def init_db():
                         loja TEXT)""")
     
     lojas_iniciais = [("Loja Centro",), ("Loja Shopping",), ("Curitiba",)]
-    for l in lojas_iniciais:
-        cursor.execute("INSERT OR IGNORE INTO lojas VALUES (?)", l)
+    cursor.executemany("INSERT OR IGNORE INTO lojas VALUES (?)", lojas_iniciais)
     
     usuarios_iniciais = [
         ("admin", "admin123", "Administrador", "Geral"),
@@ -80,8 +79,7 @@ def init_db():
         ("estoque_shopping", "123", "Estoquista", "Loja Shopping"),
         ("chefe_shopping", "123", "Estoquista Chefe", "Loja Shopping")
     ]
-    for u in usuarios_iniciais:
-        cursor.execute("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", u)
+    cursor.executemany("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", usuarios_iniciais)
     conn.commit()
 
     cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (
