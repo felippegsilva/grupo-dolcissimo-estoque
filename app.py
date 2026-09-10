@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 import io
 import xml.etree.ElementTree as ET
 import urllib.parse
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -101,7 +103,6 @@ def init_db():
         except:
             pass
 
-    # Tabela para salvar histórico de inventários realizados
     cursor.execute("""CREATE TABLE IF NOT EXISTS inventarios_salvos (
                         id_inventario INTEGER PRIMARY KEY AUTOINCREMENT,
                         data TEXT,
@@ -121,6 +122,40 @@ def init_db():
     conn.close()
 
 init_db()
+
+# --- FUNÇÃO GERADORA DE PDF PARA CONFERÊNCIA ---
+def gerar_pdf_conferencia(id_ped, lote, solicitante, produto, qtd_ped, qtd_env, motivo, validade):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, height - 50, "GRUPO DOLCISSIMO - RELATÓRIO DE CONFERÊNCIA")
+    
+    c.setFont("Helvetica", 11)
+    c.drawString(50, height - 80, f"ID do Pedido: {id_ped} | Lote: {lote}")
+    c.drawString(50, height - 100, f"Solicitante: {solicitante}")
+    c.drawString(50, height - 120, f"Data do Relatório: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    c.line(50, height - 135, width - 50, height - 135)
+    
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, height - 170, "Detalhes do Item:")
+    
+    c.setFont("Helvetica", 11)
+    c.drawString(70, height - 200, f"• Produto: {produto}")
+    c.drawString(70, height - 220, f"• Quantidade Solicitada: {qtd_ped}")
+    c.drawString(70, height - 240, f"• Quantidade Enviada pelo Estoque: {qtd_env}")
+    c.drawString(70, height - 260, f"• Motivo da Divergência: {motivo if motivo else 'Nenhuma / Sem Divergência'}")
+    c.drawString(70, height - 280, f"• Validade Sugerida: {validade}")
+    
+    c.line(50, height - 330, width - 50, height - 330)
+    c.setFont("Helvetica-Oblique", 9)
+    c.drawString(50, height - 350, "Documento gerado automaticamente pelo Sistema Corporativo de Estoque - Grupo Dolcissimo.")
+    
+    c.save()
+    buffer.seek(0)
+    return buffer
 
 # --- TELA DE LOGIN ---
 st.sidebar.title("🔐 Acesso ao Sistema")
@@ -317,7 +352,7 @@ else:
                 st.markdown("### ✅ Registrar Chegada e Dar Baixa (Itens Prontos)")
                 conn = sqlite3.connect('sistema_estoque.db')
                 df_prontos = pd.read_sql(f"""
-                    SELECT r.id_pedido, p.descricao, r.qtd_enviada_estoque, r.validade_sugerida
+                    SELECT r.id_pedido, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.validade_sugerida
                     FROM requisicoes_loja r
                     JOIN produtos p ON r.codigo_produto = p.codigo
                     WHERE r.loja = '{loja_atual}' AND r.status = 'Pronto para Check-list'
@@ -329,7 +364,8 @@ else:
                         id_ped_sel = st.selectbox("Selecione o ID do Item Conferido pelo Estoque", df_prontos['id_pedido'].tolist())
                         item_info = df_prontos[df_prontos['id_pedido'] == id_ped_sel].iloc[0]
                         
-                        st.info(f"Produto: **{item_info['descricao']}** | Qtd Enviada pelo Estoque: **{item_info['qtd_enviada_estoque']}**")
+                        # Campo em destaque azul conforme solicitado
+                        st.info(f"📋 **Item Selecionado:** {item_info['descricao']} | 📥 **Qtd Solicitada:** {item_info['qtd_pedida']} | 📦 **Qtd Enviada:** {item_info['qtd_enviada_estoque']}")
                         
                         col_c1, col_c2, col_c3 = st.columns(3)
                         with col_c1:
@@ -340,7 +376,7 @@ else:
                         with col_c3:
                             estoquista_entregou = st.text_input("Nome do Estoquista Entregador")
                         
-                        btn_finalizar_chk = st.form_submit_button("✔️ Confirmar Recebimento e Dar Baixa no Estoque", use_container_width=True)
+                        btn_finalizar_chk = st.form_submit_button("✔️ Confirmar Recebimento e Dar Baixa", use_container_width=True)
                         
                         if btn_finalizar_chk:
                             if not estoquista_entregou.strip():
@@ -363,8 +399,13 @@ else:
                                 cursor.execute("UPDATE requisicoes_loja SET qtd_entregue = ?, estoque_responsavel = ?, validade_alterada_gerente = ?, status = 'Concluído' WHERE id_pedido = ?", 
                                                (qtd_entregue, estoquista_entregou.strip(), v_str, id_ped_sel))
                                 
+                                # ADICIONA NO ESTOQUE DA LOJA
                                 cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)", 
                                                (cod_p, loja_atual, qtd_entregue, v_str))
+                                
+                                # SUBTRAI DO ESTOQUE CENTRAL (CENTRAL GERAL/ESTOQUE)
+                                cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)", 
+                                               (cod_p, "Geral (Centro)", -qtd_entregue, v_str))
                                     
                                 detalhe_log = f"Check-list item #{id_ped_sel} Concluído | Entregue por: {estoquista_entregou.strip()} | Qtd Recebida: {qtd_entregue} (Val: {v_str})"
                                 cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
@@ -372,7 +413,7 @@ else:
                                 
                                 conn.commit()
                                 conn.close()
-                                st.success("Check-list concluído e estoque atualizado com sucesso!")
+                                st.success("Check-list concluído, estoque da loja atualizado e central debitado com sucesso!")
                                 st.rerun()
                 else:
                     st.info("Nenhum item aguardando check-list.")
@@ -384,7 +425,7 @@ else:
             sub_inv1, sub_inv2 = st.tabs(["Realizar Nova Contagem", "Histórico de Inventários Salvos"])
             
             with sub_inv1:
-                st.markdown("#### Nova Contagem de Estoque")
+                st.markdown("#### Nova Contagem de Estoque (Ajuste Automático de Estoque)")
                 conn = sqlite3.connect('sistema_estoque.db')
                 df_produtos_inv = pd.read_sql("SELECT codigo, descricao FROM produtos", conn)
                 df_estoque_atual = pd.read_sql(f"SELECT codigo, SUM(quantidade) as qtd FROM estoque_lotes WHERE loja = '{loja_atual}' GROUP BY codigo", conn)
@@ -394,7 +435,6 @@ else:
                 df_inv_full.columns = ["cód", "nome", "saldo_atual"]
 
                 if not df_inv_full.empty:
-                    # Usamos formulário apenas para coletar os inputs de contagem
                     with st.form("form_inventario_gerente"):
                         contagens_usuario = {}
                         for idx, row in df_inv_full.iterrows():
@@ -409,11 +449,15 @@ else:
                                 contagens_usuario[row['cód']] = st.number_input(f"Contagem {row['cód']}", min_value=0.0, value=float(row['saldo_atual']), step=1.0, key=f"inv_{row['cód']}", label_visibility="collapsed")
                             st.markdown("---")
 
-                        btn_salvar_contagem = st.form_submit_button("💾 Salvar Contagem de Inventário", use_container_width=True)
+                        btn_salvar_contagem = st.form_submit_button("💾 Salvar Contagem e Ajustar Estoque da Loja", use_container_width=True)
                     
-                    # Botão e lógica fora do formulário para evitar erros de layout do Streamlit
                     if btn_salvar_contagem:
                         dados_csv = []
+                        data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        conn = sqlite3.connect('sistema_estoque.db')
+                        cursor = conn.cursor()
+                        
                         for idx, row in df_inv_full.iterrows():
                             c_real = contagens_usuario[row['cód']]
                             dados_csv.append({
@@ -421,21 +465,25 @@ else:
                                 "nome": row['nome'],
                                 "contagem": c_real
                             })
+                            
+                            # AJUSTAR O ESTOQUE ATUAL DA LOJA PARA O VALOR DA CONTAGEM
+                            cursor.execute("DELETE FROM estoque_lotes WHERE loja = ? AND codigo = ?", (loja_atual, row['cód']))
+                            if c_real > 0:
+                                cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
+                                               (row['cód'], loja_atual, c_real, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")))
                         
                         df_resultado_inv = pd.DataFrame(dados_csv)
                         csv_string = df_resultado_inv.to_csv(index=False, sep=';', encoding='utf-8-sig')
                         
-                        data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        conn = sqlite3.connect('sistema_estoque.db')
-                        cursor = conn.cursor()
                         cursor.execute("INSERT INTO inventarios_salvos (data, loja, responsavel, dados_csv) VALUES (?, ?, ?, ?)",
                                        (data_hora, loja_atual, st.session_state.usuario, csv_string))
                         cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                       (data_hora, st.session_state.usuario, loja_atual, "INVENTARIO", f"Inventário físico salvo para a unidade {loja_atual}."))
+                                       (data_hora, st.session_state.usuario, loja_atual, "INVENTARIO_AJUSTE", f"Inventário físico realizado e estoque da loja {loja_atual} ajustado."))
+                        
                         conn.commit()
                         conn.close()
                         
-                        st.success("Contagem salva com sucesso! Acesse a aba 'Histórico de Inventários Salvos' para baixar o arquivo CSV.")
+                        st.success("Contagem salva e estoque da loja ajustado com sucesso! Acesse a aba 'Histórico' para baixar o CSV.")
                 else:
                     st.info("Nenhum produto cadastrado.")
 
@@ -541,33 +589,36 @@ else:
                     
                     col_e1, col_e2, col_e3 = st.columns(3)
                     with col_e1:
-                        qtd_enviada = st.number_input("Quantidade Enviada (Obrigatório digitar)", min_value=0.0, value=float(item_req['qtd_pedida']), step=1.0)
+                        qtd_enviada = st.number_input("Quantidade Enviada", min_value=0.0, value=float(item_req['qtd_pedida']), step=1.0)
                     with col_e2:
-                        motivo_div = st.text_input("Motivo de Divergência (Opcional)")
+                        motivo_div = st.text_input("Motivo de Divergência (Obrigatório se qtd diferente)")
                     with col_e3:
                         val_sug = st.date_input("Validade do Item")
                     
                     btn_salvar_conf = st.form_submit_button("📤 Enviar Conferência deste Item", use_container_width=True)
                     if btn_salvar_conf:
-                        data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        v_str = val_sug.strftime("%Y-%m-%d")
-                        
-                        conn = sqlite3.connect('sistema_estoque.db')
-                        cursor = conn.cursor()
-                        cursor.execute("""UPDATE requisicoes_loja 
-                                          SET qtd_enviada_estoque = ?, motivo_divergencia = ?, validade_sugerida = ?, status = 'Pronto para Check-list' 
-                                          WHERE id_pedido = ?""",
-                                       (qtd_enviada, motivo_div.strip(), v_str, id_conf))
-                        
-                        cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                       (data_hora, st.session_state.usuario, loja_atual, "CONFERENCIA_ESTOQUE", f"Estoquista enviou conferência item #{id_conf}: Qtd enviada={qtd_enviada}, Divergência={motivo_div}, Validade={v_str}"))
-                        conn.commit()
-                        conn.close()
-                        st.success("Conferência enviada com sucesso! O pedido avançou para o check-list da loja.")
-                        st.rerun()
+                        if qtd_enviada != float(item_req['qtd_pedida']) and not motivo_div.strip():
+                            st.warning("⚠️ Como a quantidade enviada é diferente da solicitada, o motivo de divergência é obrigatório!")
+                        else:
+                            data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            v_str = val_sug.strftime("%Y-%m-%d")
+                            
+                            conn = sqlite3.connect('sistema_estoque.db')
+                            cursor = conn.cursor()
+                            cursor.execute("""UPDATE requisicoes_loja 
+                                              SET qtd_enviada_estoque = ?, motivo_divergencia = ?, validade_sugerida = ?, status = 'Pronto para Check-list' 
+                                              WHERE id_pedido = ?""",
+                                           (qtd_enviada, motivo_div.strip(), v_str, id_conf))
+                            
+                            cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                           (data_hora, st.session_state.usuario, loja_atual, "CONFERENCIA_ESTOQUE", f"Estoquista enviou conferência item #{id_conf}: Qtd enviada={qtd_enviada}, Divergência={motivo_div}, Validade={v_str}"))
+                            conn.commit()
+                            conn.close()
+                            st.success("Conferência enviada com sucesso! O pedido avançou para o check-list da loja.")
+                            st.rerun()
 
                 st.markdown("---")
-                st.markdown("### 🖨️ Histórico e Impressão de Conferências Realizadas")
+                st.markdown("### 🖨️ Histórico de Conferências Realizadas & Download em PDF")
                 conn = sqlite3.connect('sistema_estoque.db')
                 df_historico = pd.read_sql(f"""
                     SELECT r.id_pedido, r.lote_id, r.solicitante, p.descricao, r.qtd_pedida, r.qtd_enviada_estoque, r.motivo_divergencia, r.validade_sugerida, r.status
@@ -580,7 +631,22 @@ else:
 
                 if not df_historico.empty:
                     st.dataframe(df_historico, use_container_width=True, hide_index=True)
-                    st.info("💡 Dica: Utilize a função de impressão do navegador (Ctrl+P) para gerar o documento físico de conferência.")
+                    
+                    id_hist_sel = st.selectbox("Selecione o ID para Baixar o PDF da Conferência", df_historico['id_pedido'].tolist(), key="sel_hist_pdf")
+                    if id_hist_sel:
+                        row_h = df_historico[df_historico['id_pedido'] == id_hist_sel].iloc[0]
+                        pdf_buffer = gerar_pdf_conferencia(
+                            row_h['id_pedido'], row_h['lote_id'], row_h['solicitante'], 
+                            row_h['descricao'], row_h['Qtd Solicitada'] if 'Qtd Solicitada' in row_h else row_h['qtd_pedida'], 
+                            row_h['qtd_enviada_estoque'], row_h['motivo_divergencia'], row_h['validade_sugerida']
+                        )
+                        st.download_button(
+                            label="📥 Baixar Relatório de Conferência em PDF",
+                            data=pdf_buffer,
+                            file_name=f"conferencia_pedido_{id_hist_sel}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
                 else:
                     st.info("Nenhuma conferência finalizada no histórico ainda.")
             else:
@@ -826,41 +892,77 @@ else:
                     st.success("Nenhum vencimento próximo.")
         
         with tab_lojas:
-            st.markdown("### 🏢 Gerenciamento de Lojas")
-            with st.form("form_nova_loja"):
-                nova_loja = st.text_input("Nome da Nova Loja")
-                cad_loja = st.form_submit_button("Cadastrar Loja", use_container_width=True)
-                if cad_loja and nova_loja.strip():
-                    conn = sqlite3.connect('sistema_estoque.db')
-                    cursor = conn.cursor()
-                    try:
-                        cursor.execute("INSERT INTO lojas VALUES (?)", (nova_loja.strip(),))
-                        conn.commit()
-                        st.success(f"Loja '{nova_loja}' cadastrada com sucesso!")
-                        st.rerun()
-                    except:
-                        st.error("Esta loja já existe.")
-                    conn.close()
+            st.markdown("### 🏢 Gerenciamento de Lojas (Adicionar, Alterar e Excluir)")
+            
+            sub_l1, sub_l2, sub_l3 = st.tabs(["Cadastrar Nova Loja", "Alterar Nome de Loja", "Excluir Loja"])
+            
+            with sub_l1:
+                with st.form("form_nova_loja"):
+                    nova_loja = st.text_input("Nome da Nova Loja")
+                    cad_loja = st.form_submit_button("Cadastrar Loja", use_container_width=True)
+                    if cad_loja and nova_loja.strip():
+                        conn = sqlite3.connect('sistema_estoque.db')
+                        cursor = conn.cursor()
+                        try:
+                            cursor.execute("INSERT INTO lojas VALUES (?)", (nova_loja.strip(),))
+                            conn.commit()
+                            st.success(f"Loja '{nova_loja}' cadastrada com sucesso!")
+                            st.rerun()
+                        except:
+                            st.error("Esta loja já existe.")
+                        conn.close()
+
+            with sub_l2:
+                conn = sqlite3.connect('sistema_estoque.db')
+                df_lojas_alt = pd.read_sql("SELECT * FROM lojas", conn)
+                conn.close()
+                if not df_lojas_alt.empty:
+                    with st.form("form_alterar_loja"):
+                        loja_antiga = st.selectbox("Selecione a Loja para Alterar", df_lojas_alt['nome_loja'].tolist())
+                        novo_nome_loja = st.text_input("Novo Nome da Loja")
+                        btn_alt_loja = st.form_submit_button("Salvar Alteração de Nome", use_container_width=True)
+                        if btn_alt_loja and novo_nome_loja.strip():
+                            conn = sqlite3.connect('sistema_estoque.db')
+                            cursor = conn.cursor()
+                            try:
+                                cursor.execute("UPDATE lojas SET nome_loja = ? WHERE nome_loja = ?", (novo_nome_loja.strip(), loja_antiga))
+                                cursor.execute("UPDATE usuarios SET loja = ? WHERE loja = ?", (novo_nome_loja.strip(), loja_antiga))
+                                cursor.execute("UPDATE estoque_lotes SET loja = ? WHERE loja = ?", (novo_nome_loja.strip(), loja_antiga))
+                                cursor.execute("UPDATE requisicoes_loja SET loja = ? WHERE loja = ?", (novo_nome_loja.strip(), loja_antiga))
+                                conn.commit()
+                                st.success(f"Loja alterada com sucesso para '{novo_nome_loja.strip()}'!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao alterar: {e}")
+                            conn.close()
+                else:
+                    st.info("Nenhuma loja cadastrada.")
+
+            with sub_l3:
+                conn = sqlite3.connect('sistema_estoque.db')
+                df_lojas = pd.read_sql("SELECT * FROM lojas", conn)
+                conn.close()
+                if not df_lojas.empty:
+                    with st.form("form_excluir_loja"):
+                        loja_para_excluir = st.selectbox("Selecione uma loja para excluir", df_lojas['nome_loja'].tolist())
+                        btn_del_loja = st.form_submit_button("Excluir Loja Selecionada", use_container_width=True)
+                        if btn_del_loja:
+                            conn = sqlite3.connect('sistema_estoque.db')
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM lojas WHERE nome_loja = ?", (loja_para_excluir,))
+                            cursor.execute("DELETE FROM usuarios WHERE loja = ?", (loja_para_excluir,))
+                            conn.commit()
+                            conn.close()
+                            st.success(f"Loja '{loja_para_excluir}' excluída com sucesso!")
+                            st.rerun()
+                else:
+                    st.info("Nenhuma loja cadastrada.")
                     
             st.markdown("---")
             conn = sqlite3.connect('sistema_estoque.db')
-            df_lojas = pd.read_sql("SELECT * FROM lojas", conn)
+            df_lojas_geral = pd.read_sql("SELECT * FROM lojas", conn)
             conn.close()
-            st.dataframe(df_lojas, use_container_width=True, hide_index=True)
-
-            if not df_lojas.empty:
-                with st.form("form_excluir_loja"):
-                    loja_para_excluir = st.selectbox("Selecione uma loja para excluir", df_lojas['nome_loja'].tolist())
-                    btn_del_loja = st.form_submit_button("Excluir Loja Selecionada", use_container_width=True)
-                    if btn_del_loja:
-                        conn = sqlite3.connect('sistema_estoque.db')
-                        cursor = conn.cursor()
-                        cursor.execute("DELETE FROM lojas WHERE nome_loja = ?", (loja_para_excluir,))
-                        cursor.execute("DELETE FROM usuarios WHERE loja = ?", (loja_para_excluir,))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Loja '{loja_para_excluir}' excluída com sucesso!")
-                        st.rerun()
+            st.dataframe(df_lojas_geral, use_container_width=True, hide_index=True)
                 
         with tab_users:
             st.markdown("### 👥 Gerenciamento de Usuários")
