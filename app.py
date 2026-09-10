@@ -35,11 +35,9 @@ def formatar_data_br(val):
         if len(str_val) >= 19:  # YYYY-MM-DD HH:MM:SS
             dt = datetime.strptime(str_val[:19], "%Y-%m-%d %H:%M:%S")
             return dt.strftime("%d/%m/%Y %H:%M:%S")
-        elif len(str_val) == 10 and '-' in str_val:  # YYYY-MM-DD
+        elif len(str_val) == 10:  # YYYY-MM-DD
             dt = datetime.strptime(str_val, "%Y-%m-%d")
             return dt.strftime("%d/%m/%Y")
-        elif len(str_val) == 10 and '/' in str_val:  # Já está em dd/mm/aaaa
-            return str_val
     except:
         pass
     return str_val
@@ -69,10 +67,7 @@ def init_db():
     
     lojas_iniciais = [("Loja Centro",), ("Loja Shopping",), ("Curitiba",)]
     for l in lojas_iniciais:
-        try:
-            cursor.execute("INSERT OR IGNORE INTO lojas (nome_loja) VALUES (?)", l)
-        except Exception:
-            pass
+        cursor.execute("INSERT OR IGNORE INTO lojas VALUES (?)", l)
     
     usuarios_iniciais = [
         ("admin", "admin123", "Administrador", "Geral"),
@@ -84,11 +79,7 @@ def init_db():
         ("chefe_shopping", "123", "Estoquista Chefe", "Loja Shopping")
     ]
     for u in usuarios_iniciais:
-        try:
-            cursor.execute("INSERT OR IGNORE INTO usuarios (username, senha, perfil, loja) VALUES (?, ?, ?, ?)", u)
-        except Exception:
-            pass
-            
+        cursor.execute("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?)", u)
     conn.commit()
 
     cursor.execute("""CREATE TABLE IF NOT EXISTS produtos (
@@ -321,14 +312,12 @@ else:
                 with st.form("form_add_carrinho"):
                     col_a, col_b = st.columns([2, 1])
                     with col_a:
-                        prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist(), key="select_prod_requisicao")
-                    with col_b:
-                        qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
-                        
-                    if prod_sel:
+                        prod_sel = st.selectbox("Selecione o Produto", df_produtos['descricao'].tolist())
                         est_atual_item = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'estoque_atual'].values[0]
                         unid_med = df_produtos.loc[df_produtos['descricao'] == prod_sel, 'unidade'].values[0]
-                        st.info(f"ℹ️ Estoque atual desta unidade para **{prod_sel}**: **{est_atual_item} {unid_med}**")
+                        st.info(f"ℹ️ Estoque atual desta unidade: **{est_atual_item} {unid_med}**")
+                    with col_b:
+                        qtd_pedida = st.number_input("Quantidade Desejada", min_value=0.0, value=0.0, step=1.0)
                         
                     btn_add = st.form_submit_button("➕ Adicionar ao Carrinho", use_container_width=True)
                     
@@ -779,7 +768,7 @@ else:
             
         with tab_xml:
             st.markdown("### 📥 Importação de NF-e (Quantidade Fixa da Nota & Unidade Física Editável)")
-            xml_file = st.file_uploader("Arquivo XML da Nota Fiscal", type=["xml"])
+            xml_file = st.file_uploader("Arquivo XML da Nota Fiscal", type=["xml"], key="upload_xml_nota")
             
             if xml_file is not None:
                 try:
@@ -807,66 +796,76 @@ else:
                         itens_nf = []
                         for det in det_list:
                             prod = det.find('nfe:prod', ns)
-                            c_prod = prod.find('nfe:cProd', ns).text
-                            x_prod = prod.find('nfe:xProd', ns).text
-                            q_com = float(prod.find('nfe:qCom', ns).text)
-                            v_un = float(prod.find('nfe:vUnCom', ns).text)
+                            c_prod = prod.find('nfe:cProd', ns).text if prod.find('nfe:cProd', ns) is not None else "SEM-COD"
+                            x_prod = prod.find('nfe:xProd', ns).text if prod.find('nfe:xProd', ns) is not None else "Produto sem descrição"
+                            q_com = float(prod.find('nfe:qCom', ns).text) if prod.find('nfe:qCom', ns) is not None else 0.0
+                            v_un = float(prod.find('nfe:vUnCom', ns).text) if prod.find('nfe:vUnCom', ns) is not None else 0.0
                             u_com_xml = prod.find('nfe:uCom', ns).text if prod.find('nfe:uCom', ns) is not None else "un"
                             itens_nf.append({"Código": c_prod, "Descrição": x_prod, "Qtd": q_com, "UnidadeXML": u_com_xml, "Custo": v_un})
                         
-                        st.markdown("#### Revise a Validade e Unidade Física de Cada Item da Nota:")
-                        validades_digitadas = {}
-                        unidades_fisicas = {}
+                        st.markdown(f"**NF-e Identificada:** `{chave_nfe}` | **Total de Itens:** `{len(itens_nf)}`")
+                        st.markdown("---")
                         
-                        for i, item in enumerate(itens_nf):
-                            st.markdown(f"**Item {i+1}: {item['Descrição']}** (Cód Fornecedor: {item['Código']})")
-                            col_x1, col_x2, col_x3, col_x4 = st.columns(4)
-                            with col_x1:
-                                st.markdown(f"**Qtd (Travada):** `{item['Qtd']}`")
-                            with col_x2:
-                                unidades_fisicas[i] = st.text_input(f"Unidade Física (Editável)", value=item['UnidadeXML'], key=f"un_{i}")
-                            with col_x3:
-                                validades_digitadas[i] = st.date_input(f"Validade", key=f"v_{i}", value=None)
-                            with col_x4:
-                                st.write(f"Custo Unit: R$ {item['Custo']:.2f}")
-                            st.markdown("---")
-                        
-                        if st.button("Confirmar Entrada de Todos os Itens da NF-e", use_container_width=True):
-                            data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            conn = sqlite3.connect('sistema_estoque.db')
-                            cursor = conn.cursor()
+                        with st.form("form_confirma_xml"):
+                            validades_digitadas = {}
+                            unidades_fisicas = {}
                             
                             for i, item in enumerate(itens_nf):
-                                v_str = validades_digitadas[i].strftime("%Y-%m-%d") if validades_digitadas[i] else datetime.now().strftime("%Y-%m-%d")
-                                q_real = item['Qtd']
-                                un_fisica = unidades_fisicas[i].strip() if unidades_fisicas[i].strip() else item['UnidadeXML']
-                                cod_forn = item['Código']
-                                
-                                cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
-                                prod_existente = cursor.fetchone()
-                                
-                                if prod_existente:
-                                    cod_sistema = prod_existente[0]
-                                    cursor.execute("UPDATE produtos SET unidade = ? WHERE codigo = ?", (un_fisica, cod_sistema))
-                                else:
-                                    cod_sistema = gerar_proximo_codigo_produto()
-                                    cursor.execute("""INSERT INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) 
-                                                      VALUES (?, '', ?, ?, 'Geral', ?, ?, 5.0)""",
-                                                   (cod_sistema, cod_forn, item["Descrição"], un_fisica, item["Custo"]))
-                                
-                                cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
-                                               (cod_sistema, loja_atual, q_real, v_str))
+                                st.markdown(f"**Item {i+1}: {item['Descrição']}** (Cód Forn: `{item['Código']}`)")
+                                col_x1, col_x2, col_x3, col_x4 = st.columns(4)
+                                with col_x1:
+                                    st.markdown(f"**Qtd Nota:** `{item['Qtd']}`")
+                                with col_x2:
+                                    unidades_fisicas[i] = st.text_input(f"Unidade Física", value=item['UnidadeXML'], key=f"un_{i}")
+                                with col_x3:
+                                    validades_digitadas[i] = st.date_input(f"Validade", key=f"v_{i}", value=None)
+                                with col_x4:
+                                    st.write(f"Custo Unit: R$ {item['Custo']:.2f}")
+                                st.markdown("---")
                             
-                            cursor.execute("INSERT INTO nfs_importadas (chave_nfe, data_importacao, loja) VALUES (?, ?, ?)",
-                                           (chave_nfe, data_hora, loja_atual))
+                            btn_conf_xml = st.form_submit_button("Confirmar Entrada de Todos os Itens da NF-e", use_container_width=True)
                             
-                            cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
-                                           (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_XML", f"Entrada NF-e chave {chave_nfe} em {loja_atual} com {len(itens_nf)} itens."))
-                            conn.commit()
-                            conn.close()
-                            st.success("Todos os itens da Nota Fiscal foram cadastrados e deram entrada no estoque da unidade com sucesso!")
+                            if btn_conf_xml:
+                                data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                conn = sqlite3.connect('sistema_estoque.db')
+                                cursor = conn.cursor()
+                                
+                                for i, item in enumerate(itens_nf):
+                                    v_escolhida = validades_digitadas[i]
+                                    v_str = v_escolhida.strftime("%Y-%m-%d") if v_escolhida else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
+                                    q_real = item['Qtd']
+                                    un_fisica = unidades_fisicas[i].strip() if unidades_fisicas[i].strip() else item['UnidadeXML']
+                                    cod_forn = item["Código"]
+                                    
+                                    # Verifica se o produto já existe pelo código de fornecedor
+                                    cursor.execute("SELECT codigo FROM produtos WHERE codigo_fornecedor = ?", (cod_forn,))
+                                    prod_existente = cursor.fetchone()
+                                    
+                                    if prod_existente:
+                                        cod_sistema = prod_existente[0]
+                                        cursor.execute("UPDATE produtos SET unidade = ?, custo = ? WHERE codigo = ?", (un_fisica, item['Custo'], cod_sistema))
+                                    else:
+                                        cod_sistema = gerar_proximo_codigo_produto()
+                                        cursor.execute("""INSERT INTO produtos (codigo, codigo_barras, codigo_fornecedor, descricao, categoria, unidade, custo, estoque_minimo) 
+                                                          VALUES (?, '', ?, ?, 'Geral', ?, ?, 5.0)""",
+                                                       (cod_sistema, cod_forn, item['Descrição'], un_fisica, item['Custo']))
+                                    
+                                    # Insere no estoque da unidade atual
+                                    cursor.execute("INSERT INTO estoque_lotes (codigo, loja, quantidade, validade) VALUES (?, ?, ?, ?)",
+                                                   (cod_sistema, loja_atual, q_real, v_str))
+                                
+                                # Registra nota como importada para bloquear duplicidade
+                                cursor.execute("INSERT OR REPLACE INTO nfs_importadas (chave_nfe, data_importacao, loja) VALUES (?, ?, ?)",
+                                               (chave_nfe, data_hora, loja_atual))
+                                
+                                cursor.execute("INSERT INTO logs_sistema (data, usuario, loja, tipo_acao, detalhes) VALUES (?, ?, ?, ?, ?)",
+                                               (data_hora, st.session_state.usuario, loja_atual, "ENTRADA_XML", f"Entrada NF-e chave {chave_nfe} em {loja_atual} com {len(itens_nf)} itens."))
+                                
+                                conn.commit()
+                                conn.close()
+                                st.success("🎉 Todos os itens da Nota Fiscal foram cadastrados e deram entrada no estoque com sucesso!")
                 except Exception as e:
-                    st.error(f"Erro ao processar o XML: {e}")
+                    st.error(f"❌ Erro ao processar o XML: {e}")
 
         with tab_manual:
             st.markdown("### ✍️ Entrada Manual de Estoque")
@@ -885,16 +884,16 @@ else:
                     with col_m2:
                         custo_m = st.number_input("Preço Unitário (R$)", min_value=0.0, value=0.0, step=0.01)
                     with col_m3:
-                        val_m = st.date_input("Validade do Lote (Obrigatório escolher)", value=None)
+                        val_m = st.date_input("Validade do Lote (Opcional)", value=None)
                     
                     btn_ent_man = st.form_submit_button("Confirmar Entrada Manual", use_container_width=True)
                     if btn_ent_man:
-                        if qtd_m <= 0 or custo_m <= 0 or not val_m:
-                            st.warning("⚠️ Todos os campos (Quantidade, Preço e Validade) devem ser preenchidos com valores válidos.")
+                        if qtd_m <= 0 or custo_m <= 0:
+                            st.warning("⚠️ Informe uma quantidade e preço unitário válidos.")
                         else:
                             cod_m = df_prods_m.loc[df_prods_m['descricao'] == prod_sel_m, 'codigo'].values[0]
                             data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            v_str = val_m.strftime("%Y-%m-%d")
+                            v_str = val_m.strftime("%Y-%m-%d") if val_m else (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
                             
                             conn = sqlite3.connect('sistema_estoque.db')
                             cursor = conn.cursor()
@@ -906,8 +905,6 @@ else:
                             conn.commit()
                             conn.close()
                             st.success("Entrada manual registrada com sucesso!")
-            else:
-                st.info("Nenhum produto cadastrado para realizar entrada manual.")
 
         if perfil_atual == "Estoquista Chefe":
             with tab_baixa:
